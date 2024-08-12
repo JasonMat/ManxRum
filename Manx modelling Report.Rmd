@@ -1,0 +1,2631 @@
+---
+title: "MS-P-0200 - Rum Manx Shearwater Population Modelling: Technical report"
+author: "Jason Matthiopoulos & Robert W. Furness"
+date: '`r Sys.Date()`'
+output:
+  bookdown::pdf_document2:
+    toc: no
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document:
+    toc: no
+  number_sections: true
+biblio-style: apsr
+fontsize: 11pt
+geometry: left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm
+header-includes:
+- \usepackage{setspace}
+- \usepackage{amsmath}
+keywords: integrated analysis, state-space model 
+linestretch: 1
+bibliography: 
+- 'Manx.bib'
+abstract: The Rum Manx shearwater population modelling project, funded by Marine Scotland aims to understand historical and future trends in this population of high conservation importance. In this technical report, we present a detailed description of the modelling priorities and summarise some of the pertinent features of the biological system and data availability. We describe the key decisions leading us to adopt a Bayesian state-space model and describe its development along the axes of process and observation components. The process part of the model comprises survival and breeding success. These demographic processes can be affected by extrinsic (e.g. rainfall) and intrinsic (e.g. density dependence) covariates. We devote some space to the development of a detailed model for density dependence for burrowing seabird colonies. Although this additional feature cannot currently be incorporated in the population state-space model due to data limitations, it is an important general extension for future work. The simplest version of the model contains no environmental covariates, opting instead to represent extrinsic drivers by stochastic (independent & identically distributed) overdispersion terms in breeding success and adult survival. More elaborate extensions of the process component of the model illustrate how a partially observed covariate (rainfall) can be incorporated into demography. The observation model considers the features (limitations and advantages) of all the field data, as elaborated in the literature review generated for this project. We consider bias and precision in population estimates, particularly with regard to the most recent and statistically influential reports, using burrow counts and acoustic playback data. We capture variations in sampling effort in fecundity data and the information that can be derived by neighboring proxy data. We explain how we have used existing estimates of survival. We provide details on the derivation of priors from the extensive literature review and discussions with experts. We then proceed to present results from fitting the model to the complete dataset and present a validation experiment by using posterior parameter summaries to generate synthetic data of a similar nature. This validation exercise suggests that the available data are sufficient to accurately and precisely retrieve hidden parameters and to reconstruct population trends in partially observed or wholly unobserved demographic trends. These reconstructions, generated from the real data indicate that the population has been increasing since the 1980s but may now be starting to experience the effects of density dependence. We extend the temporal horizon of the model to a 100-year forecasting range and run several counterfactual scenarios relating to anthropogenic impacts on adult mortality and fecundity. These experiments indicate that the population would be robust to very strong pulse-perturbations (e.g., 50% adult mortality and complete failure in fecundity), but would be vulnerable to sustained, press-perturbations in the survival of adults (e.g., 5% annual reduction in adult mortality). 
+
+include-before:
+- '`\newpage{}`{=latex}'
+link-citations: yes
+---
+
+\newpage{}
+
+\newcommand{\W}{\mathbf{W}}
+\newcommand{\xy}{\mathbf{x}}
+\newcommand{\yx}{\mathbf{y}}
+\newcommand{\bmu}{{\mathbf{\mu}}}
+\newcommand{\bbeta}{{\mathbf{\beta}}}
+\newcommand{\Alpha}{\mathcal{A}}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(boot)
+library(coda)
+library(runjags)
+
+# MCMC specifications
+MCMCdetails<-FALSE
+MCMCadapt<-5000 # 5000
+MCMCburnin<-5000000 # 5000000
+MCMCsample<-5000 # 5000
+MCMCthin<-100 # 100
+
+```
+
+
+```{r functions, include=FALSE}
+pripostPlot1<-function(coda)
+{
+  
+par(mfrow=c(3,2))
+# Baseline fecundity
+#Prior
+da<-0.01
+loa<-0
+hia<-1
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dbeta(am,13.45,5.85)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.2), ylab="Prob density", 
+     xlab="Coefficient", type="l", main="a. Baseline fecundity")
+# Posterior
+b0D<-exp(coda$b0)/(1+exp(coda$b0))
+f<-as.numeric(table(cut(b0D,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+
+
+
+
+# Residual var in fecundity
+#Prior
+da<-0.1
+loa<-0
+hia<-20
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dgamma(am,0.01,0.01)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.05),ylab="Prob density", 
+     xlab="Coefficient", type="l", main="b. Variability in fecundity")
+# Posterior
+varBD<-coda$varB
+f<-as.numeric(table(cut(varBD,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+
+# Baseline fledgling survival
+#Prior
+muu<-rbeta(100000,111,236) # Compound pre-breeder survival
+musj<-rbeta(100000,172.55,30.45)
+musf<-muu/musj^3
+musfH<-hist(musf, breaks=50, plot=FALSE)
+fd<-musfH$counts
+fd<-fd/sum(fd)
+am<-musfH$mids
+plot(am,fd,lwd=2,lty=1, xlim=c(0,1), ylim=c(0,0.1), ylab="Prob density",
+     xlab="Coefficient", type="l", main="c. Baseline fledg. surv.")
+# Posterior
+sf0D<-exp(coda$sf0)/(1+exp(coda$sf0))
+fh<-hist(sf0D, breaks=musfH$breaks, plot=FALSE)
+f<-fh$counts
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+
+# Residual var in fledg surv
+#Prior
+da<-0.1
+loa<-0
+hia<-20
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dgamma(am,0.01,0.01)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.05),ylab="Prob density", 
+     xlab="Coefficient", type="l", main="d. Variability in fledg surv")
+# Posterior
+varFD<-coda$varF
+f<-as.numeric(table(cut(varFD,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+
+# Baseline juvenile survival
+#Prior
+da<-0.01
+loa<-0
+hia<-1
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dbeta(am,172.55,30.45) 
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.2), ylab="Prob density", 
+     xlab="Coefficient", type="l", main="e. Baseline juv surv.")
+# Posterior
+sj0D<-exp(coda$sj0)/(1+exp(coda$sj0))
+f<-as.numeric(table(cut(sj0D,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+
+# Residual var in juv surv
+#Prior
+da<-0.1
+loa<-0
+hia<-20
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dgamma(am,0.01,0.01)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.05),ylab="Prob density", 
+     xlab="Coefficient", type="l", main="f. Variability in juv surv")
+# Posterior
+varJD<-coda$varJ
+f<-as.numeric(table(cut(varJD,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+
+par(mfrow=c(1,1))
+}
+
+pripostPlot2<-function(coda)
+{
+  par(mfrow=c(2,2))
+
+# Baseline adult survival
+#Prior
+da<-0.01
+loa<-0
+hia<-1
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dbeta(am,42.14, 5.21) 
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.2), ylab="Prob density", 
+     xlab="Coefficient", type="l", main="g. Baseline adult surv.")
+# Posterior
+sa0D<-exp(coda$sa0)/(1+exp(coda$sa0))
+f<-as.numeric(table(cut(sa0D,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+
+# Residual var in adult surv
+#Prior
+da<-0.1
+loa<-0
+hia<-20
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dgamma(am,0.01,0.01)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.05),ylab="Prob density", 
+     xlab="Coefficient", type="l", main="h. Variability in adult surv")
+# Posterior
+varAD<-coda$varA
+f<-as.numeric(table(cut(varAD,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+
+
+# Density dependence
+#Prior
+da<-0.000001
+loa<-0
+hia<-0.0002
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dgamma(am,1,1000) 
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.05),ylab="Prob density", 
+     xlab="Coefficient", type="l", main="i. Density dependence")
+# Posterior
+rho1D<-coda$rho1
+f<-as.numeric(table(cut(rho1D,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+
+# Fecundity scaling for Canna
+#Prior
+cD<-rbeta(100000,1,1)
+C<-0.5+cD
+CH<-hist(C, breaks=50, plot=FALSE)
+fd<-CH$counts
+fd<-fd/sum(fd)
+am<-CH$mids
+plot(am,fd,lwd=2,lty=1, xlim=c(0.5,1.5), ylim=c(0,0.2), ylab="Prob density", 
+     xlab="Coefficient", type="l", main="j. Scaling for Canna breeding")
+# Posterior
+CD<-coda$C
+fh<-hist(CD, breaks=CH$breaks, plot=FALSE)
+f<-fh$counts
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+
+par(mfcol=c(1,1))
+}
+
+trajectories<-function(summaries)
+{
+  
+######################################################## Population trends ###
+par(mfcol=c(3,2))
+
+
+# Fledglings
+rang<-(1:tmax)
+T<-ymin+(1:length(rang))
+plot(T,summaries[rang,2], type="l", ylim=c(0,100000), xlab="Time (years)", ylab="N", main="a. Fledglings")
+polygon(c(T,rev(T)),c(summaries[rang,1],rev(summaries[rang,3])), border=NA, col="salmon")
+lines(T,summaries[rang,2])
+#lines(T,N[T],col="grey",lwd=2,lty=2)
+
+# Recruits
+rang<-tmax+(1:tmax)
+T<-ymin+(1:length(rang))
+plot(T,summaries[rang,2], type="l", ylim=c(0,40000), xlab="Time (years)", ylab="R", main="c. Recruits")
+polygon(c(T,rev(T)),c(summaries[rang,1],rev(summaries[rang,3])), border=NA, col="salmon")
+lines(T,summaries[rang,2])
+#lines(T,R,col="grey",lwd=2,lty=2)
+
+# Adults
+rang<-2*tmax+(1:tmax)
+T<-ymin+(1:length(rang))
+plot(T,summaries[rang,2], type="l", ylim=c(0,250000), xlab="Time (years)", ylab="P", main="e. Adults")
+polygon(c(T,rev(T)),c(summaries[rang,1],rev(summaries[rang,3])), border=NA, col="salmon")
+lines(T,summaries[rang,2])
+#lines(T,P,col="grey",lwd=2,lty=2)
+
+
+
+
+######################################################## Demographic trends ###
+
+# Fecundity
+rang<-3*tmax+(1:(tmax-4))
+T<-ymin+(1:length(rang))
+plot(T,2*summaries[rang,2], type="l", ylim=c(0,1), xlab="Time (years)", ylab="b", main="b. Fecundity")
+polygon(c(T,rev(T)),c(2*summaries[rang,1],rev(2*summaries[rang,3])), border=NA, col="salmon")
+lines(T,2*summaries[rang,2])
+#lines(T,2*b[T+5],col="grey",lwd=2,lty=2)
+
+# Recruitment
+rang<-(3*tmax)+(tmax-4)+(1:(tmax-4))
+T<-ymin+(1:length(rang))
+plot(T,summaries[rang,2], type="l", ylim=c(0,1), xlab="Time (years)", ylab="rec", main="d. Recruitment")
+polygon(c(T,rev(T)),c(summaries[rang,1],rev(summaries[rang,3])), border=NA, col="salmon")
+lines(T,summaries[rang,2])
+#lines(T,rec[T+5],col="grey",lwd=2,lty=2)
+
+# Adult Survival
+rang<-(3*tmax)+2*(tmax-4)+(1:(tmax-4))
+T<-ymin+(1:length(rang))
+plot(T,summaries[rang,2], type="l", ylim=c(0,1), xlab="Time (years)", ylab="sa", main="f. Adult Survival")
+polygon(c(T,rev(T)),c(summaries[rang,1],rev(summaries[rang,3])), border=NA, col="salmon")
+lines(T,summaries[rang,2])
+#lines(T,sa[T+5],col="grey",lwd=2,lty=2)
+
+par(mfrow=c(1,1))
+}
+```
+
+# Background
+Much of the background on the system and data availability is covered in the accompanying literature review and datasheet reports for this project (see 'Rum shearwater model - Data availability Report.docx'). Here, we collect and summarise those aspects that are pertinent for the derivation of the model so that the report can be read as a self-contained document.
+
+## The system
+A relatively closed island system with a population that has been studied since the early 1950s. We note that the available, intermittent observations of diverse processes have originated from inconstant methodologies across the years of study by different groups of scientists. The key objective is to synthesise these diverse data into a quantitative baseline that can also admit covariate data, either from historical sources, or from new data collections. The key challenge is in distinguishing between true ecological fluctuations and artefacts created by the changes in survey methodology and calculation. Strong points of the data set are the auxiliary measures of demographic rates (survival and fecundity) and body of expert knowledge from field ecologists who have been dedicatedly working on this population for several decades. 
+
+## Data availability overview
+The details of data availability are covered in the data report for this project, but, in summary what we have available to fit the model are:
+
+1. A total of seven surveys designed to estimate population size in individual years (1976, 1979, 1982, 1990, 1995, 2001 & 2021), each with a reported 95% confidence interval, mainly relating to sampling variation. Each survey has a different method to estimate the size of the colony and the estimated colony area is also known (but subject to debate). 
+
+6. A single, additional tape-playback survey in 2001 to obtain an estimate of bird abundance via a radically different method to the survey inspection. 
+
+2. Direct or indirect prior knowledge about the four demographic baseline processes of interest (survival of adults, juveniles and fledglings as well as fecundity). 
+
+3. Several continuous years of data on productivity of sampled burrows. Different studies have observed different sample sizes and have applied slightly different definitions of breeding success estimated by various methods (e.g., frequency of nest burrow checks and means of assessing burrow contents). The period 1973-1993 is relatively sparse in such data from the Isle of Rum. 
+
+4. A contiguous period of estimates for adult survival (1994-2010), with associated standard errors.
+
+5. A period of years between 1973 and 1985 where productivity was recorded for the neighbouring island of Canna.
+
+7. Time series of rainfall data, available for different times of the year. Only a limited number of years exists for Rum itself, and more extensive uninterrupted data from other locations, such as Tiree. 
+
+8. Very short 5y period of rat abundance index, not overlapping with data on breeding success.
+
+## Modelling priorities
+
+The modelling priorities described below often take the form of trade-offs, requiring model-design decisions that achieve a balance between biological realism and statistical expedience. In this section, we spell out the priorities involved and refer back to them in the model development sections.  
+
+Given the diversity of information available on the system, the first priority is to develop an **integrative model** that can accommodate all of the available data and offers the option to incorporate and evaluate as many environmental drivers (in the form of covariates) and be supported by as many expert views (in the form of parameter constraints, of priors) as available. Integrated Population Modelling (IPM) is most recently being recognised as a valuable conservation tool [@Zipkin2018], but the development of ecological IPMs under this or other names has been going on for more than a decade [@Buckland2007a; @Fieberg2010; @Matthiopoulos2014; @Maunder2013], as has the debate about achieving a good balance between over and under-parameterisation [@Lonergan2014; @Matthiopoulos2014a].
+
+Models are not solely informed by data inputs and expert opinions, but also by biological constraints. In the case of the present project, these originate from the key principles of population dynamics. The inherent time-series structure of the problem (even though not all years exist in the data), imposes some much-needed constraints to what the system can and cannot do. For example, assuming that we have not observed a population for a period of five years, but we know that it is physiologically constrained to grow at a maximum of 10% a year, under ideal conditions, we should feel confident that it cannot have doubled in the interim period. A key priority of our modelling therefore is to recognise such **mechanistic principles** and use an approach that explicitly incorporates constraints. This means that fitting a flexible but purely empirical model (e.g., a generalised additive model) through the observations is probably not going to be desirable. On the other hand, a model that contains too many biological constraints may end up disagreeing with the observations (and hence failing to converge). This can be addressed by introducing random effects in areas where we suspect there may be potential for model misspecification. A simple example of such a situation occurs when we suspect that not all influential covariates are known (precisely, or at all) for demographic processes. Temporally stochastic terms then need to be introduced to represent the effects of these unknown covariates on the observations.
+
+A further priority is to correctly **address uncertainty** in reconstructed parameters, system states, forecasts and counterfactuals. This requires us to tread a fine balance between acknowledging uncertainty of different forms at the information-input stage, but without being so agnostic that we end up ignoring basic biological principles and cause the model to fail (by e.g., not converging to an answer) because of lack of information. 
+
+
+
+# Model development
+
+Achieving the first modelling objective (data integration) can be done via a frequentist approach, but it is generally easier to achieve on a Bayesian framework. The Bayesian approach also affords a more flexible treatment of uncertainty in model predictions and is, by design, suited to the incorporation of expert opinion in the form of priors. We divide model development sections to those covering the biological process and those relating to observation processes. 
+
+## Process model
+
+The model's state variable is $P_t$, the number of breeding females, or, alternatively, the number of active burrows in the population. As a notational convention, we will use upper-case letters for population state variables and lower-case symbols for demographic functions. We model population dynamics in discrete time $t$ (annual scale). In principle, next year's population size will comprise surviving adults from this year and the new recruits (the survivors from the cohort of chicks produced 5 years ago). This implies the deterministic model
+
+\begin{equation}
+P_{t+1}=s_{a,t}P_t+b_{t-4}u_{t-4}r_tP_{t-4}
+\end{equation}
+
+Where $s_a$ is adult survival, $b$ is breeding success and $u_{t-4}$ represents aggregate pre-adult survival  over the last five years 
+
+\begin{equation}
+u_{t-4}=s_{f,t-4}\prod_{i=0}^{3}s_{j,t-i}
+\end{equation}
+
+using the notation $s_f$ and $s_j$ to represent fledgling (i.e., first-year) and juvenile survival respectively. We need a stochastic version of this model which is written in terms of adult survivors ($S_t$), recruits ($R_t$) and fledglings ($N_t$)
+
+\begin{align}
+ P_{t+1} =& S_{t}+R_t\\
+ S_t \sim& \text B(P_t,s_{a,t})\\
+ R_t \sim& \text B(N_{t-4},r_t u_{t-4})\\
+ N_t \sim& \text B(P_{t},\tfrac{1}{2} b_{t})
+\end{align}
+
+A binomial is used for fecundity (as opposed to a Poisson process) because shearwaters will produce at most one female offspring in any given year. Each of the demographic rates can be expressed in terms of a suitably transformed linear predictor of covariates $X_{i,t}$ and extraneous stochasticity $\epsilon_{*,t}$. Specifically, for  survival, 
+
+\begin{equation}
+(\#eq:survival)
+s_{*,t}=\text{logit}^{-1}\left( \sigma_{*,0}+\sum\sigma_{*,i}X_{i,t}+\epsilon_{*,t} \right)
+\end{equation}
+
+Where the symbol $*$ stands for any of the three $a,j,f$ ages considered in the model and the noise term $\epsilon_{*,t} \sim \text N(0,\sigma_*)$ aims to capture interanual fluctuations in survival not captured by the covariates. Depending on whether the covariates have been standardised or not, the interpretation of $\sigma_{*,0}$ will vary. If the raw covariate measurements are used, then the intercept is the basic survival rate for zero values of the covariates. For most covariates, this interpretation is difficult to imagine because such scenarios can be far from reality (what is the meaning of basic survival rate under zero average yearly temperature?) and therefore difficult to provide priors for. For many covariates, the value zero has no physical meaning, because often the covariate is a relative index, a proxy for some quantity that cannot be measured absolutely (e.g., food availability). In addition, statistical models are generally easier to fit to standardised data. If the covariate data are standardised across a sufficiently long period of observation, we have the new form of covariate
+
+\begin{equation}
+\hat X_{i,t}=\frac{X_{i,t}-\bar{X}}{SD(X)}
+\end{equation}
+
+and the intercept $\sigma_{*,0}$ can be interpreted as the basic survival rate under average conditions. Furthermore, division by the standard deviation aims to ultimately make the estimated coefficients $\sigma_{*,i}$ comparable between qualitatively different covariates, so that a finding of the type $\sigma_{*,i}>\sigma_{*,j}$ directly implies that the $i^{th}$ covariate is more influential on this demographic process than the $j^{th}$ covariate. 
+Echoing the above formulation for breeding success we use
+
+\begin{equation}
+(\#eq:fecundity)
+b_t=\text{logit}^{-1}\left(\beta_0+\sum \beta_iX_{i,t}+\zeta_{t} \right)
+\end{equation}
+
+where the symbols have a related interpretation to the survival model and the noise term $\zeta_t\sim \text N(0,\beta)$ aims to capture unnexplained interannual variations in breeding success. 
+
+Finally, the recruitment of surviving juveniles is
+
+\begin{equation}
+r_t=\text{logit}^{-1} \left( \rho_0-\rho_1P_t \right)
+\end{equation}
+
+In this expression, we require $\rho_0$ to have a sufficiently high value such that when $P_t$ is approximately zero, recruitment is effectively guaranteed. We gtherefore set this to the value $\rho_0=10$ as standard throughout the modelling. 
+Note the use of a compensatory density-dependence term [@Miller2019a]. The strength of density dependence, represented by the parameter $\rho_1$ is an important and difficult parameter to quantify. The data may hold enough information for this, in the case of a population that has been observed under high crowding conditions, but in the case of a consistently decreasing population (i.e., one that can be plausibly assumed not to be operating under the influence of such a form of density dependence), it is likely that the model can find no such information in the available data. In such a case, the model may fail to converge with regard to $\rho_1$. Such a result would provide tentative (but not conclusive) evidence that the population is operating purely under environmental drivers, and not density dependence. 
+
+## A more in-depth model for density dependence for Manx shearwaters: Burrows or greens? {#DDBurrow}
+
+In broader terms, and given that this model will be used for future data collected in Rum, and potentially other colonies, it is worth exploring the issue of density dependence a little further. The strength of the density dependence parameter $\rho_1$ ultimately determines the population's carrying capacity. This number (naively, the total number of operational burrows that can be packed onto the island) could be informed by conversations with experts. A starting point for such conversations would consider the availability of suitable habitat (or areas of "shearwater greens") as described by early researchers on the island [@Wormell1976] and the highest densities of burrows observed within surveyed greens. Having conducted such preliminary interviews for this project, the ecological feature that immediately emerges is the issue of the availability of suitable burrows. Many burrows are 1 to 3 m long, almost invariably with a change in burrow direction within the tunnel, and very often starting underneath a large boulder. The excavation of a new burrow is slow and will make it impossible for the number of AOBs to increase fast over a short number of years. 
+
+Most people doing a census at Rum have commented that only a small proportion of burrows are apparently not occupied so are excluded from the AOB count. That means there cannot be any large increase in breeding numbers without much excavation of new burrows (there are no other burrow-digging animals on the island). 
+
+Numbers of AOBs could (in theory) decrease faster, but if they did then there would be lots of apparently unoccupied burrows – which has never been observed. It would take decades for unused burrows to “disappear” as they are large holes in very hard compacted gravelly ground, so would not simply fall in or cover up with vegetation. 
+
+So, even though the availability of burrows might limit the growth of the population at any given time, the more often the population approaches its current carrying capacity, the more individuals might be encouraged to invest in digging new burrows. This might suggest the introduction of an additional state variable, $B_t$ used to represent the carrying capacity of the population in relation to the maximum number of burrows that can be physically packed into the island greens. A plausible model for this state variable might be the following:
+
+
+\begin{equation}
+B_{t+1}=qB_t+R_t\frac{1-r_t}{r_t}f(B_t,P_t)
+\end{equation}
+
+Where, $R_t(1-r_t)/r_t$ is the number of unrecruited individuals. The function $f$ describes the incremental, per-capita burrows that can be built in any given point in time, and $q$ describes the temporally constant survivability of burrows (here, considered $\approx1$). We can summarise the behaviour of the function $f$, in terms of desirable biological features:
+
+* Building burrows can only increase the total number of burrows. The function should take non-negative values.
+* There is a maximum per-capita annual rate $v$ at which individuals can dig burrows
+* No new burrows would get built if the population size was low, compared to the current available burrows. So, if the ratio $P_t/B_t$ is close to 1, the building of new burrows would reach maximum rate.
+* On the other hand, no new burrows would get built if the population was reaching saturation density in all of the available greens. We can introduce the parameter $B_{\max}$ to denote that number. So, when $B_t/B_{\max}$ is close to 1, no more building would occur. 
+
+
+We can collect these facts into a mathematical formulation for $f$:
+
+\begin{align}
+ f(P_t,B_t)=& vp_1p_2\\
+ p_1 =& \text{logit}^{-1} \left( \psi_0+\psi_1 \frac{P_t}{B_t}\right)\\
+ p_2 =& \text{logit}^{-1} \left( \phi_0+\phi_1 \frac{B_t}{B_{\max}}\right)\\
+\end{align}
+
+Although the above expressions appear to be introducing six new parameters ($v, B_{\max},\psi_0,\psi_1,\phi_0,\phi_1$), much can be done to reduce that number.
+
+We require that $p_1$ is close to zero when $P_t$ is small (relative to $B_t$) and that it is close to one when $P_t$ is large (relative to $B_t$). We can achieve this behaviour by setting $\psi_0<<-1$ and stipulating that the inflection point of the sigmoidal curve (i.e. its half-saturation point) occurs sufficiently close to $B_t$. For example, requiring that $p_1(0.9B_t)=1/2$, yields a plausible link between the two parameters of $p_1$: $\psi_1=-1.11\psi_0$. Similar reasoning for $p_2$ leads to the constraints $\phi_0>>1$ and $\phi_1=-1.11\phi_0$.
+
+We may even simplify the model further, by assuming that the steepness of the two sigmoidals is high and similar, such that $\psi_0 \approx \phi_0$. These could be estimated as part of the integrated model, but it is probably best to fix them to a sufficiently large value (e.g., 10). We are therefore left with two parameters ($v$ and $B_{\max}$) that have a direct biological interpretation and can therefore be provided with priors.
+
+To bring this section back to the original model, we need to be able to specify the strength of density-dependence parameter $\rho_1$in terms of the current value of the carrying capacity $B_t$. 
+
+Taking the deterministic version of the model, and specifying it to average environmental conditions across years, implies a steady-state population size for Rum. This steady-state corresponds to the current carrying capacity $B_t$. We can use this fact to derive an expression for a time-varying coefficient of density dependence:
+
+\begin{equation}
+(\#eq:burrowDD)
+\rho_{1,t}=\frac{1}{B_t} \left( \rho_0-\ln\frac{1-s_a}{s_fs_j^3 b-1+s_a}\right)
+\end{equation}
+
+```{r PxPlus, echo=FALSE, fig.cap="The behaviour of the burrow-building drive function f. As the current population P approaches the current carrying capacity B, the value of the function is maximised to the highest per-capita burrow building rate. However, as the carrying capacity B increases to approach the maximum burrow-saturation value Bmax, whereby all greens have been burrowed to maximum density, the building of new burrows becomes damped.",  align='middle', fig.height=4, fig.width=4}
+deltaB <- function(P, B){
+  r<-0.1
+  psi0<- -10
+  fi0<-10
+  psi1<- -1.11*psi0
+  fi1<- -1.11*fi0
+  Bmax<-1000
+  l1<-psi0+psi1*P/B
+  l2<-fi0+fi1*B/Bmax
+  p1<-exp(l1)/(1+exp(l1))
+  p2<-exp(l2)/(1+exp(l2))
+  return(1+r*p1*p2)
+}
+
+P <- B <- seq(0, 1000, length = 40)
+f <- outer(P,B, deltaB)
+
+persp(P, B, f, phi=30, theta=220)
+```
+
+
+This theoretical extension of the population model would require priors only for $B_{\max}$ and $v$, and it would allow a non-stationary carrying capacity. A model with such an extension could be compared with a model of fixed carrying capacity via model selection, but correct inference would rely on the population having pushed against its current carrying capacity several times during the window of observations. Such information may not exist in the available data for the Rum colony, so a prudent approach would be to start with a population model that has a fixed carrying capacity, and allowing the model fitting process to estimate a value for that. Nevertheless, this section forms an important part of future extensions. 
+
+A further extension on density dependent processes may also deal with the possibility of density dependence in breeding success resulting from limitations in the the number of flood-resistant burrows – such that high rainfall may not only reduce breeding success but may also do this in a density-dependent manner. 
+
+### Stochastic terms in demographic processes
+The stochastic (overdispersion) terms $\epsilon_{*,t}$ and $\zeta_t$ used in the linear predictors of the model's demographic rates are informed by their corresponding precisions $\sigma_{*}$ and $\beta$, for which priors must be provided. The priors must necessarily be naive, because we do not know, to begin with, how much variation exists in these processes, certainly before any covariates have been offered to the model. On the other hand, we should not allow uncertainty to swamp any signal in the data, by providing such low precision values that any fluctuation is possible between years. 
+
+## Observation model
+We structure the presentation of the observation model along the same three axes as the presentation of the available data. A large part of integrated population modelling, particularly when the time series available are not complete, or overlapping, is the imputation of missing data. In some cases (e.g., reconstructing the time series of demographic rates in this model) the results of imputation are interesting in their own right. In other cases (e.g., filling-in gaps in covariate data), imputation is necessary to deal with nuisance variables or parameters. Below, wherever imputation is needed, we highlight the method of imputation for different data types. 
+
+### Population surveys
+As part of the process model, for any given year $t$, the model imputes the hidden true population size $P_t$. We did not access to the raw data (i.e. the transects and counts) that gave rise to the population estimates historically, because this would have required us re-running those estimation exercises from the start. Instead, we used the total number estimated by each study and a measure of uncertainty which can be converted to a CV for that population. Different surveys took different approaches in the field, but also implemented a differing scaling-up calculation (i.e., surveyed density of burrows, but calculated the total area of the colony on the island in different ways). 
+In principle, any given estimate of population size can be thought of as coming from a flexible observation process (without imposing a need for integer values at the observation stage, since this involves an estimator for very large population numbers)
+
+\begin{equation}
+\hat P_t \sim N(P_t,cv_tP_t)
+\end{equation}
+
+where $cv_t$ is the coefficient of variation reported by the study carried out in a particular year (a number that is available as data). However, beyond this first observation model for the surveys, it is possible that two types of error are built into the given estimates:
+
+* Bias in the point estimate: Underestimates could result from consistently selecting low-density areas for the transect surveys. Overestimates could result from assuming that more greens are suitable, or currently contain burrows.
+
+* Bias in the precision: Accounting for only some sources of uncertainty in the estimate could have led to a smaller-than-necessary CV. Being too precautionary about the sources of error could have the opposite effect. 
+
+A more generalised observation model therefore that accounts for these effects could use two additional scalars to account for such biases:
+
+\begin{equation}
+\hat P_t \sim N(\tau_{1,t}P_t,\tau_{2,t}cv_tP_t),\  \ \ \tau_{1,t},\tau_{2,t}>0
+\end{equation}
+
+Since these two scalars are free parameters and change by survey year, such a model could only ever be fitted if there were very strong priors for the $\tau$ parameters coming from experts. We do not have these, but have carried out an extensive sensitivity analysis of our results on survey biases and imprecisions. 
+
+### Demographic data
+Fecundity data come in the form of proportions: the proportion of burrows surveyed that reproduced successfully. However, effort (the number of burrows surveyed) varies from year to year (30 burrows in early years, going up to 221 in 2014). To allow us to capture these variabilities in precision due to effort alone, we modelled the two numbers as part of a binomial process
+
+\begin{equation}
+\hat N_t \sim \text B(K_t, b_t)
+\end{equation}
+
+where $K_t \geq 0$ is the number of surveyed burrows and $0 \leq \hat N_t \leq K_t$ is the number of those that reproduced. The immediate inferential benefit of these data is on the parameters $\beta$ of the function for $b_t$, allowing years with high observation effort to be more informative about fecundity trends than years with little, or no data. A caveat to this approach is that the years with small sample sizes ($n=30$ burrows) were years when the data recorded were probably very accurate (based on a sample of marked burrows where an inspection lid had been put over the nest chamber to allow exact nest contents to be observed). In years with large sample sizes, the burrows may often have been ones where it was difficult to be sure if an egg had been laid or not, giving some inconsistent data (some burrows excluded as “uncertain” in some years but apparently not in others). So, although, in principle, larger sample sizes should be weighted more, perhaps the information they carry is not proportional to sample size. One solution to this would be to examine the sensitivity of the overall results when $K_t$ is replaced by a capped (i.e., $\hat K_t = \min(K_t,K_{\max})$) value in the range $30 \leq K_{\max} \leq K_t$. Alternatively, a further (observation) error term may be applied to  $\hat N_t$.
+
+Survival data for adults, came in the form of estimates from mark-recapture [@Duff2011] over the period 1994-2010. These were provided with standard errors which were both small and relatively constant (ranging from 0.01-0.03). The values of survival also did not vary much during this 17-year period (0.95-0.98). We therefore used the time series of estimates ($\hat s_{a,t}$) as the data, with a fixed standard error of 0.03, to formulate the observation process on the underlying modelled adult survival rate ($s_{a,t}$)
+
+\begin{equation}
+\hat s_{a,t} \sim N(s_{a,t},0.03)
+\end{equation}
+
+(using the most precautionary value of the standard errors estimated by [@Duff2011]). We did not use the full time series of standard errors, because this would have meant imputing SEs for the missing 55 years (an example where the number of nuisance variables introduced by imputation would far-outweigh the benefit of communicating to the model the small variations of survival SEs during the observation period). 
+
+There were no survival estimates for the fledgling or juvenile stages in the model, so the only information provided directly on those demographic rates was in the form of baseline priors. The full trajectories for all four demographic rates were reconstructed as latent variables by the model. 
+
+
+
+## Prior specification
+The key parameters of the process model that can be helped from prior knowledge are the baseline demographic rates, represented by the intercepts of eqs \@ref(eq:survival) and \@ref(eq:fecundity). The review carried out in the data report of this project , provides some guidance for specifying these demographic priors. Firstly, it suggests a baseline adult survival in the range 0.8-0.98. These reported ranges in the literature often included the effects of interannual stochasticity and covariates. Therefore, even though this is likely to be too wide a bracket of uncertainty, we can be precautionary and allow the prior to inherit this level of uncertainty. For the values $\text{mean}(\bar s_a)=0.89$ and $SD(\bar s_a)=0.045$ a beta prior can be constructed
+
+\begin{equation}
+\bar s_a \sim \text{Beta}(42.14,5.21)
+\end{equation}
+ 
+Since all of the demographic parameters come in the form of an inverse logit intercept, with standardised covariates, they imply the following link between the natural scale parameter and the intercept. For the example of adult survival:
+
+\begin{equation}
+\sigma_{a,0}=\ln \left( \frac{\bar s_a}{1-\bar s_a}   \right)
+\end{equation}
+
+Figure \@ref(fig:priorIntercepts) illustrates the full specification graphically. Similar calculations for all demographic intercepts based on the data review report give us priors for the other intercepts. 
+
+```{r priorIntercepts, echo=FALSE, fig.cap="Implied prior distribution for the intercept of the linear predictor of adult survival",  align='middle', fig.height=3, fig.width=5}
+
+par(mfrow=c(1,2))
+
+mu<-(0.98+0.8)/2
+sd<-(0.98-0.8)/4
+al<-mu*(mu*(1-mu)/sd^2-1)
+be<-(1-mu)*(mu*(1-mu)/sd^2-1)
+S<-rbeta(10000,al,be)
+hist(S)
+Sigma<-log(S/(1-S))
+hist(Sigma)
+
+par(mfrow=c(1,1))
+```
+
+
+For juvenile survival, we have two pieces of information. The @Harris1966 paper indicates that annual survival of 4-year old juveniles is approximately 0.8 (no uncertainty was provided). This compares favourably with the estimate of 0.85-0.88 provided most recently by @Wood2021 for the annual survival of non-breeding individuals. A precautionarily broad range for this parameter would therefore be 0.8-0.9 with mean 0.85, which implies the following prior:
+
+\begin{equation}
+\bar s_j \sim \text{Beta}(172.55,30.45)
+\end{equation}
+
+Although we don't have direct information for first-year survival, an informative joint prior can be constructed from the available information. @Perrins1973 report that compounded survival from birth to recruitment is in the range 0.27-0.37. This can be thought of as setting a prior for the mean compound survival $\bar u=\bar s_f \bar s_j^3$. 
+
+\begin{equation}
+\bar u\sim \text{Beta}(111,236)
+\end{equation}
+
+Therefore, for any given value of $\bar s_j$ and $\bar u$, from these priors, we can derive a deterministic expression for the value of baseline fledgling survival:
+
+\begin{equation}
+\bar s_f = \bar u \bar s_j^{-3}
+\end{equation}
+
+Breeding success is well informed by the available data, so it is not advisable to constrain the intercept arbitrarily, especially since all the information available for the baseline fecundity comes from the fecundity data that is already used by the model. Instead, we can use the national average (0.697) and sd (0.102), provided by @Horswill2015:
+
+\begin{equation}
+\bar b \sim \text{Beta}(0.1,0.04)
+\end{equation}
+
+The parameters $\rho_0$ and $\rho_1$ pertaining to recruitment were confounded, and therefore not identifiable during model fitting. We therefore decided to fix $\rho_0$ to the arbitrary but plausible value of 10. This implied that, in a very small population (i.e., in the absence of density dependence) the recruitment probability took the value 0.9999546. The other relevant parameter $\rho_1$ was free to be estimated conditional on this value of $\rho_0$, so that it had sufficient magnitude to dampen recruitment with increasing population size. 
+
+
+```{r priorInterceptsAll, echo=FALSE}
+# Just a note of the calculations cited below in the prior statements
+
+#u
+mu<-(0.37+0.27)/2
+sd<-(0.37-0.27)/4
+al<-mu*(mu*(1-mu)/sd^2-1)
+be<-(1-mu)*(mu*(1-mu)/sd^2-1)
+
+#sj
+mu<-(0.8+0.9)/2
+sd<-(0.9-0.8)/4
+al<-mu*(mu*(1-mu)/sd^2-1)
+be<-(1-mu)*(mu*(1-mu)/sd^2-1)
+
+#b
+mu<-0.697
+sd<-0.102
+al<-mu*(mu*(1-mu)/sd^2-1)
+be<-(1-mu)*(mu*(1-mu)/sd^2-1)
+
+```
+
+## Addition of data from playback surveys
+During the 2001 survey [@Murray2003], a parallel method of data collection using tape playback was implemented at a time of year when non-breeding burrow occupiers would not be an issue. A correction factor of approximately 1.9 was applied to account for non-responding birds. This may have been a low correction since a similar study using visual and acoustic methods carried out on Welsh populations [@Smith2001] found that response rates are between 0.3 and 0.53 (implying corrections in the range 1.9-3.3). The confidence intervals of the two population estimates (AOS) obtained via these two methods had non-overlapping confidence intervals. These discrepancies can be reconciled by a different call-back response probability, but the population estimates obtained in this way cannot easily be reconciled with all preceding population estimates mainly due to the methods used for the calculation of the area occupied by the colony. To make use of this survey datum, we inflated the estimated confidence interval for the call-back population estimate by accounting for the uncertainty in the response rate. This led to a mean estimate of 97945 and a CV of 0.175. It is worth noting that this calculation is over the same estimate for the area of the colony provided by [@Murray2003] for the visual part of their survey.
+
+## Addition of breeding data from Canna
+The data from Canna have two distinct advantages. First, they cover a time period characterised by data-sparsity on Rum. Second, they have a one-year overlap with breeding data on Rum, allowing at least a rudimentary calibration. Despite its proximity to Rum, Canna offers a different geomorphology and vulnerability to risks such as rats and flooding. It therefore seems unwise to treat the Canna breeding success data as anything other than a relative index of breeding success on Rum. Here, we assume that breeding success in Canna is a scaled version of the Rum breeding success $b_{C,t}=cb_t$ and stipulate that $c \in [0.5,1.5]$. We implement this as follows, using a re-scaled, symmetric Beta prior.
+
+\begin{align}
+C_{\text{dummy}}\sim \text{Beta}(5,5) \\ 
+C=0.5+C_{\text{dummy}}
+\end{align}
+
+
+
+
+```{r JAGSModel, echo=FALSE}
+
+###### Model statement ######
+popMod <- "model{
+
+### MAIN LOOP ###
+for(t in 5:(tmax))
+{
+
+  # Fecundity (process)
+  epsB[t]~dnorm(0,precB)
+  logit(bAll[t])<-b0+epsB[t] # All fecundity
+  b[t]<-0.5*bAll[t] # Halving, to get female chicks
+  N[t]~dbin(b[t],P[t-1]) #Female fledglings
+  
+  # Fecundity (observation)
+  Ndat[t]~dbinom(bAll[t], brEfNA[t]) # Rum counts
+  NdatCanna[t]~dbinom(C*bAll[t], brEfNACanna[t]) # Canna counts
+  
+  # Recruitment
+  epsF[t]~dnorm(0,precF) # Fledgling variability in survival
+  epsJ[t]~dnorm(0,precJ) # Juvenile variability in survival
+  logit(sf[t])<-sf0+epsF[t] #First year survival
+  logit(sj[t])<-sj0+epsJ[t] #Annual juv. survival
+  u[t]<-sf[t-4]*sj[t-3]*sj[t-2]*sj[t-1] # Pre-adult survival
+  logit(rec[t])<-rho0-rho1*P[t-1] # Density dependent recruitment
+  R[t]~dbinom(rec[t]*u[t],N[t-4]) # New recruits
+  
+  # Adult survival
+  epsA[t]~dnorm(0,precA)
+  logit(sa[t])<-sa0+epsA[t]
+  Psurv[t]~dbinom(sa[t],P[t-1]) # Survivors
+  saDat[t]~dnorm(sa[t], 1/seSa^2) # Survival estimation
+  
+  # Population size (Process)
+  P[t]<-Psurv[t]+R[t]
+  
+  # Population size (Data)
+  Pdat[t]~dnorm(P[t],1/(P[t]*cvP[t]+0.000001)^2)
+}
+
+# Playback survey
+PdatPlayback~dnorm(P[51],1/(P[51]*cvPlayback+0.000001)^2)
+
+### Priors ###
+varBD~dbeta(0.5,10)
+varB<-10*varBD
+precB<-1/varB
+varAD~dbeta(0.5,10)
+varA<-10*varAD
+precA<-1/varA
+varFD~dbeta(0.5,10)
+varF<-10*varFD
+precF<-1/varF
+varJD~dbeta(0.5,10)
+varJ<-10*varJD
+precJ<-1/varJ
+
+mub~dbeta(13.45,5.85) # Baseline fecundity
+b0<-log(mub/(1-mub)) 
+Cdummy~dbeta(5,5) # Scaling for Canna breeding success
+C<-0.5+Cdummy
+
+rho0<-10
+rho1~dgamma(1,1000) # Density dependence
+
+
+muu~dbeta(111,236) # Compound pre-breeder survival
+musf<-muu/musj^3
+sf0<-log(musf/(1-musf))  # Baseline fledgling survival
+
+
+musj~dbeta(172.55,30.45) # Baseline juv survival
+sj0<-log(musj/(1-musj)) 
+
+musa~dbeta(42.14, 5.21) # Baseline adult survival
+sa0<-log(musa/(1-musa))
+
+seSa<-0.03 # STandard error for adult survival estimation
+
+sdRat~dgamma(1,1) #Standard deviation for rat abundance index
+
+# Initial populations
+for(t in 1:4)
+{
+  Pdummy[t]~dunif(1000,150000)
+  P[t]<-round(Pdummy[t])
+  Rdummy[t]~dunif(2000,5000)
+  R[t]<-round(Rdummy[t])
+  Ndummy[t]~dunif(100,10000)
+  N[t]<-round(Ndummy[t])
+  sf[t]~dbeta(1,1)
+  sj[t]~dbeta(1,1)
+}
+
+
+#data# tmax,brEfNA, Ndat, brEfNACanna, NdatCanna, saDat, Pdat, cvP, PdatPlayback,cvPlayback
+
+#monitor# N,R,P,b,rec,sa,sf,sj 
+#monitor# b0,rho0,rho1,sf0,sj0,sa0,varA,varB,varF,varJ,C
+}"
+
+
+```
+
+
+```{r JAGSRun, message=FALSE, cache=TRUE, include=FALSE}
+##########################################################
+############    2. Real data specification    ############
+##########################################################
+tFut<-10 # Forecasting time horizon
+tmax<-72 # Duration of population life, to the present
+ymin<-1950 # First calendar year for model
+
+Pdat<-rep(NA, tmax)
+cvP<-rep(0.35, tmax)
+Pdat[1976-ymin]<-116100
+cvP[1976-ymin]<-0.0827
+Pdat[1979-ymin]<-135000
+cvP[1979-ymin]<-0.0407
+Pdat[1982-ymin]<-79000
+cvP[1982-ymin]<-0.0601
+Pdat[1990-ymin]<-62800
+cvP[1990-ymin]<-0.338
+Pdat[1995-ymin]<-61500
+cvP[1995-ymin]<-0.3402
+Pdat[2001-ymin]<-124000
+cvP[2001-ymin]<-0.2601
+Pdat[2021-ymin]<-226010
+cvP[2021-ymin]<-0.1540
+
+brEf<-c(0,0,0,0,0,0,0,30,30,30,30,30,30,30,30,30,30,30,0,0,30,0,30,0,0,0,0,0,0,0,0,0,0,0,48,36,0,0,0,0,0,0,0,100,84,125,91,81,77,85,76,99,93,106,110,166,171,144,154,165,153,155,173,221,28,144,48,72,0,0,0,0) # Breeding effort
+Ndat<-c(0,0,0,0,0,0,0,13, 13, 21, 15, 15, 17, 15, 19, 12, 21, 22, 0, 0, 23, 0, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21, 23, 0, 0, 0, 0, 0, 0, 0, 77, 70, 90, 80, 28, 43, 56, 55, 72, 70, 66, 63, 98, 87, 108, 106, 129, 109, 136, 88, 113, 20, 101, 31, 46, 0, 0, 0, 0)
+
+brEfCanna<-c(0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 45, 45, 45, 45, 45, 45, 45, 45, 45, 0, 45, 45, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+NdatCanna<-c(0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 26, 34, 23, 37, 33, 27, 34, 11, 0, 31, 26, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+
+saDat<-rep(NA,tmax)
+saDat[(1994:2010)-ymin]<-c(0.9842, 0.9753, 0.9835, 0.9573, 0.982, 0.9803, 0.981, 0.973, 0.9734, 0.9734, 0.9811, 0.9612, 0.9645, 0.9684, 0.9794, 0.9763, 0.9863)
+
+##########################################################
+############           3. Modelling           ############
+##########################################################
+
+######################################################## Model specification ###
+# Final data preparations
+PdatPlayback<-97945
+cvPlayback<-0.175
+
+brEfNA<-brEf
+brEfNA[brEf==0]<-30
+Ndat[brEf==0]<-NA
+
+brEfNACanna<-brEfCanna
+brEfNACanna[brEfCanna==0]<-30
+NdatCanna[brEfCanna==0]<-NA
+
+saDat[is.na(saDat)]<-NA
+Pdat[is.na(Pdat)]<-NA
+
+results <- run.jags(popMod, n.chains=4, adapt=MCMCadapt, burnin=MCMCburnin, sample=MCMCsample, thin=MCMCthin, method="parallel")
+
+```
+
+
+
+```{r summaries, message=FALSE, warning=FALSE, cache=TRUE, include=FALSE}
+
+summaries<-summary(results)
+if(MCMCdetails==TRUE)
+{
+  plot(results,plot.type=c("trace","histogram"),     vars=c("b0","b1","b2","rho1","sf0","sj0","sa0","varA","varB","varF","varJ","C"))
+}
+
+```
+
+
+
+
+```{r PriorPosteriors1, echo=FALSE, fig.cap="The prior (solid black curves) and posterior (salmon histograms) of key parameters participating in **Model 1** (which takes population estimates exactly as reported).", fig.height=8, fig.width=6, cache=FALSE}
+
+######################################################## Prior-posterior plots ###
+chains<-mcmc(results)
+coda<-as.data.frame(chains$mcmc[[1]])
+pripostPlot1(coda)
+
+```
+
+```{r PriorPosteriors2, echo=FALSE, cache=FALSE, fig.cap="(Ctd from previous fig.) The prior (solid black curves) and posterior (salmon histograms) of the key parameters participating in **Model 1** (which takes population estimates exactly as reported).", fig.height=5.3, fig.width=6}
+
+pripostPlot2(coda)
+
+```
+
+```{r Reconstructions, echo=FALSE, cache=TRUE, fig.cap="The reconstructed trajectories of key demographic processes and state variables in the population from **Model 1** (which takes population estimates exactly as reported). Median predictions shown as solid lines and 95% credible intervals shown as salmon bands.", fig.height=8, fig.width=6}
+
+trajectories(summaries)
+
+```
+
+# Fitting to real data {#Fit1}
+
+To distinguish between the results produced in this section and various sensitivity experiments conducted below, we will refer to this model that takes all population estimates and associated CIs, exactly as reported in the literature, as **Model 1**. The JAGS model developed with the above specification is shown in Appendix 1. The model converges after $6\times10^6$ iterations (of which $5\times10^6$ were burn-in). The prior and posterior distributions for the parameters of the model (Figs \@ref(fig:PriorPosteriors1) & \@ref(fig:PriorPosteriors2)) indicate that the model is gaining information from the data (In the sense that no major disagreements with the priors are observed and most posteriors are less dispersed than their corresponding priors). Of interest is the indication that density dependence is weak in this population (Fig. \@ref(fig:PriorPosteriors2)i) and that the breeding success in Canna is probably consistently lower (by about 10%) than the breeding success on Rum (Fig. \@ref(fig:PriorPosteriors2)j). The magnitude of variability in each demographic process (Figs \@ref(fig:PriorPosteriors1)b,d,f & \@ref(fig:PriorPosteriors2)h) can be used as an indicator of which process seems less buffered from external influences, and may provide direction for future inclusion of covariates (In the sense that more variable demographic processes may deserve closer investigation with causal hypotheses about extrinsic covariates). These plots indicate that the model has needed to assume highly variable adult survival in order to explain the reported survey counts (Fig. \@ref(fig:PriorPosteriors2)h). As discussed below, this may be an artefact of the inconstant methodology used to estimate population sizes on the island. Other than that, variability in fledgling survival is hinted as a likely source of variability in numbers (Fig. \@ref(fig:PriorPosteriors1)d).  
+
+The reconstructed trajectories from the model are summarised in Fig. \@ref(fig:Reconstructions). The inferred reductions in adult survival (Fig. \@ref(fig:Reconstructions)f) during the 1980s coincide with a drop in observed numbers that may be induced by changes in population size estimation methods. The model indicates that recruitment in recent years may be experiencing a drop (Fig. \@ref(fig:Reconstructions)d), hinting that density dependence may be starting to have an effect. However, this is only suggested by the lower 95% credible limit, and the trend is not reflected by the median trajectory, a consequence of the high uncertainty in the inference of density dependence (an unusually near-uniform posterior density between zero DD and values of 0.00005 shown in Fig. \@ref(fig:PriorPosteriors2)i).
+
+All model fitting was conducted via Monte Carlo Markov Chain methods implemented in the package JAGS [@Plummer2015], interfaced with R via the runJags library [@Denwood2016]. 
+
+```{r Parameters, cache=TRUE, echo=FALSE, include=FALSE, message=FALSE}
+
+######################################################## Biol parameters ###
+b0<-0.8 # Baseline fecundity
+b1<- -0.1 # Rainfall effect on fecundity
+b2<- -0.1 # Rat effect on fecundity
+rho0<-10
+rho1<-0.0001 # Density dependence
+sf0<- 0.2 # First year survival baseline
+sj0<- 2.4 # Juvenile survival baseline
+sa0<- 2.8 # Adult survival baseline
+C<-0.85 # Breeding scalar for Canna
+tmax<-72 # Duration of population life
+ymin<-1950 # First calendar year for model
+sdA<-0.5 # St dev for environmental stochasticity
+sdB<-1.1 # St dev for environmental stochasticity
+sdF<-1.02# St dev for environmental stochasticity
+sdJ<-0.6 # St dev for environmental stochasticity
+
+######################################################## Initialisation ###
+ef<-rep(NA,tmax) # Survey effort
+yef<-c(1976,1979,1982,1990,1995,2001,2021)-ymin
+ef[yef]<-1
+
+cvP<-rep(.1,tmax) # Survey CVs
+cvS<-c(0.0819,0.0407,0.0601,0.3380,0.3402,0.2601,0.1540)
+cvP[yef]<-cvS
+
+# Breeding survey effort
+brEf<-c(  0,  0,  0,  0,  0,  0,  0, 30, 30, 30,
+         30, 30, 30, 30, 30, 30, 30, 30,  0,  0,
+         30,  0, 30,  0,  0,  0,  0,  0,  0,  0, 
+          0,  0,  0,  0, 48, 36,  0,  0,  0,  0, 
+          0,  0,  0,100, 84,125, 91, 81, 77, 85, 
+         76, 99, 93,106,110,166,171,144,154,165,
+        153,155,173,221, 28,144, 48, 72,  0,  0,  
+          0,  0) 
+
+# Breeding survey effort in Canna
+brEfCanna<-c( 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+              0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+              0, 0,45,45,45,45,45,45,45,45, 
+             45, 0,45,45,45, 0, 0, 0, 0, 0, 
+              0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+              0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+              0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
+              0, 0)
+
+yeSa<-(1994:2010)-ymin
+seSa<-0.01
+efSa<-rep(NA,tmax) # Survival effort
+efSa[yeSa]<-1
+
+```
+
+
+
+```{r SimulationCode, cache=TRUE, echo=FALSE, include=FALSE, message=FALSE}
+
+P<-rep(50000, tmax) # Females (breeding pairs)
+N<-rep(10000, tmax) # Offspring (female)
+R<-rep(10000, tmax) # Recruits
+Pdat<-rep(NA, tmax) # Population data recorded
+Ndat<-rep(NA, tmax) # Breeding success data recorded on Rum
+NdatCanna<-rep(NA, tmax) # Breeding success data recorded on Canna
+sf<-rep(0.9, tmax) # Fledgling survival
+sj<-rep(0.9, tmax) # Juvenile survival
+sa<-rep(0.9, tmax) # Adult survival
+saDat<-rep(NA, tmax) # Adult survival recorded
+b<-rep(0.5, tmax) # Productivity survival
+rec<-rep(0.9, tmax) # Recruitment probability
+u<-rep(0.5, tmax) # Aggregate survival of juvs probability
+
+######################################################## Covariate data ###
+# "Rainfall": Noise on trend
+sd<-2
+rain<-rnorm(tmax,9+0.003*(1:tmax),sd) 
+rain<-(rain-mean(rain))/sqrt(var(rain))
+# "Rats": Random walk
+drat<-rnorm(tmax,0,sd)
+rat<-drat
+for(t in 2:tmax) {rat[t]<-rat[t-1]+drat[t]}
+rat<-(rat-mean(rat))/sqrt(var(rat))
+ratD<-rep(NA,tmax) # Rat data availability
+yefR<-c(2016,2017,2018,2019,2021)-ymin
+ratD[yefR]<-rat[yefR]
+
+
+### Main loop 
+for(t in 5:(tmax))
+{
+  # Fecundity (process)
+  epsB<-rnorm(1,0,sdB)
+  b[t]<-0.5*inv.logit(b0+b1*rain[t]+b2*rat[t]+epsB)
+  N[t]<-rbinom(1,P[t-1],b[t]) #Female fledglings
+  
+  # Fecundity (observation)
+  Ndat[t]<-rbinom(1, brEf[t], 2*b[t]) # Observed fledglings
+  NdatCanna[t]<-rbinom(1, brEfCanna[t], C*2*b[t]) # Observed fledglings on Canna
+  
+  # Recruitment
+  epsF<-rnorm(1,0,sdF)
+  epsJ<-rnorm(1,0,sdJ)
+  sf[t]<-inv.logit(sf0+epsF) #First year survival
+  sj[t]<-inv.logit(sj0+epsJ) #Annual juv. survival
+  u[t]<-sf[t-4]*sj[t-3]*sj[t-2]*sj[t-1]
+  rec[t]<-inv.logit(rho0-rho1*P[t-1])
+  R[t]<-rbinom(1, N[t-4],rec[t]*u[t])
+  
+  # Adult survival
+  epsA<-rnorm(1,0,sdA)
+  sa[t]<-inv.logit(sa0+epsA)
+  P[t]<-rbinom(1,P[t-1],sa[t])
+  saDat[t]<-rnorm(1,sa[t]*efSa[t],seSa)
+  
+  # Population size (Process)
+  P[t]<-P[t]+R[t]
+  
+  # Population size (Data)
+  Pdat[t]<-rnorm(1,P[t]*ef[t],P[t]*cvP[t])
+}
+
+# Playback data point
+cvPlayback<-0.175
+PdatPlayback<-rnorm(1,P[51],P[51]*cvPlayback)
+```
+
+
+
+```{r SimulatedData, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="An example of simulated data for key demographic processes and state variables in the population. The underlying processes are shown with grey lines, the data are red dots. These data were used for the validation model fitting of this section.", fig.height=8, fig.width=6, message=FALSE, cache=TRUE}
+
+### Plotting
+par(mfcol=c(3,2))
+T<-1950+(1:tmax)
+plot(T, rain, type="l", lwd=2, col="grey",main="a. Rainfall (standardised)")
+points(T,rain, col="red", lwd=3)
+
+plot(T, rat, type="l", lwd=2, col="grey", main="c. Rats (standardised)")
+points(T,ratD, col="red", lwd=3)
+
+plot(T,2*b, type="l", lwd=2, col="grey", ylim=c(0,1),main="e. Productivity (Chicks)")
+points(T,Ndat/brEf, col="red", lwd=3)
+sds<-rep(0,tmax)
+for(i in 1:tmax) {sds[i]<-sqrt(var(rbinom(1000,brEf[i],Ndat[i]/brEf[i])/brEf[i]))}
+xs0<-T
+ys0<-Ndat/brEf+2*sds
+xs1<-T
+ys1<-Ndat/brEf-2*sds
+arrows(xs0,ys0,xs1,ys1, code=3, angle=90,length=0.05)
+
+plot(T,rec, type="l", lwd=2, col="grey", ylim=c(0,1),main="b. Recruitment probability")
+
+plot(T,sa, type="l", lwd=2, col="grey", ylim=c(0,1),main="d. Adult survival")
+points(T,saDat, col="red", lwd=3)
+xs0<-T
+ys0<-saDat+2*seSa*saDat
+xs1<-xs0
+ys1<-saDat-2*seSa*saDat
+arrows(xs0,ys0,xs1,ys1, code=3, angle=90,length=0.05)
+
+plot(T,P,type="l", lwd=2, col="grey",ylim=c(0.6*min(P),1.6*max(P)), xlab="Time", ylab="Population size", main="f. Breeding pairs")
+points(T,Pdat, col="red", lwd=3)
+xs0<-yef+1950
+ys0<-Pdat[yef]+2*cvS*Pdat[yef]
+xs1<-xs0
+ys1<-Pdat[yef]-2*cvS*Pdat[yef]
+arrows(xs0,ys0,xs1,ys1, code=3, angle=90,length=0.05)
+
+par(mfrow=c(1,1))
+```
+
+
+```{r JAGSModelSim, echo=FALSE}
+
+###### Model statement ######
+popModSim <- "model{
+
+### MAIN LOOP ###
+for(t in 5:(tmax))
+{
+
+  # Fecundity (process)
+  epsB[t]~dnorm(0,precB)
+  logit(bAll[t])<-b0-b1*rain[t]-b2*drat[t]+epsB[t] # All fecundity
+  b[t]<-0.5*bAll[t] # Halving, to get female chicks
+  N[t]~dbin(b[t],P[t-1]) #Female fledglings
+  
+  # Fecundity (observation)
+  Ndat[t]~dbinom(bAll[t], brEfNA[t]) # Rum counts
+  NdatCanna[t]~dbinom(C*bAll[t], brEfNACanna[t]) # Canna counts
+  
+  # Recruitment
+  epsF[t]~dnorm(0,precF) # Fledgling variability in survival
+  epsJ[t]~dnorm(0,precJ) # Juvenile variability in survival
+  logit(sf[t])<-sf0+epsF[t] #First year survival
+  logit(sj[t])<-sj0+epsJ[t] #Annual juv. survival
+  u[t]<-sf[t-4]*sj[t-3]*sj[t-2]*sj[t-1] # Pre-adult survival
+  logit(rec[t])<-rho0-rho1*P[t-1] # Density dependent recruitment
+  R[t]~dbinom(rec[t]*u[t],N[t-4]) # New recruits
+  
+  # Adult survival
+  epsA[t]~dnorm(0,precA)
+  logit(sa[t])<-sa0+epsA[t]
+  Psurv[t]~dbinom(sa[t],P[t-1]) # Survivors
+  saDat[t]~dnorm(sa[t], 1/seSa^2) # Survival estimation
+  
+  # Population size (Process)
+  P[t]<-Psurv[t]+R[t]
+  
+  # Population size (Data)
+  Pdat[t]~dnorm(P[t],1/(P[t]*cvP[t]+0.000001)^2)
+}
+
+# Playback survey
+PdatPlayback~dnorm(P[51],1/(P[51]*cvPlayback+0.000001)^2)
+
+### Priors ###
+varBD~dbeta(0.5,10)
+varB<-10*varBD
+precB<-1/varB
+varAD~dbeta(0.5,10)
+varA<-10*varAD
+precA<-1/varA
+varFD~dbeta(0.5,10)
+varF<-10*varFD
+precF<-1/varF
+varJD~dbeta(0.5,10)
+varJ<-10*varJD
+precJ<-1/varJ
+
+mub~dbeta(13.45,5.85) # Baseline fecundity
+b0<-log(mub/(1-mub)) 
+b1~dnorm(0,0.01)
+b2~dnorm(0,0.01)
+Cdummy~dbeta(5,5) # Scaling for Canna breeding success
+C<-0.5+Cdummy
+
+rho0<-10
+rho1~dgamma(1,1000) # Density dependence
+
+
+muu~dbeta(111,236) # Compound pre-breeder survival
+musf<-muu/musj^3
+sf0<-log(musf/(1-musf))  # Baseline fledgling survival
+
+
+musj~dbeta(172.55,30.45) # Baseline juv survival
+sj0<-log(musj/(1-musj)) 
+
+musa~dbeta(42.14, 5.21) # Baseline adult survival
+sa0<-log(musa/(1-musa))
+
+seSa<-0.03 # STandard error for adult survival estimation
+
+sdRat~dgamma(1,1) #Standard deviation for rat abundance index
+
+# Initial populations
+for(t in 1:4)
+{
+  Pdummy[t]~dunif(1000,150000)
+  P[t]<-round(Pdummy[t])
+  Rdummy[t]~dunif(2000,5000)
+  R[t]<-round(Rdummy[t])
+  Ndummy[t]~dunif(100,10000)
+  N[t]<-round(Ndummy[t])
+  sf[t]~dbeta(1,1)
+  sj[t]~dbeta(1,1)
+}
+
+
+#data# tmax,brEfNA, Ndat, brEfNACanna, NdatCanna, saDat, Pdat, cvP, PdatPlayback,cvPlayback, rain, drat
+
+#monitor# N,R,P,b,rec,sa,sf,sj 
+#monitor# b0,b1,b2,rho0,rho1,sf0,sj0,sa0,varA,varB,varF,varJ,C
+}"
+
+
+```
+
+
+
+```{r JAGSFitToSimulation, cache=TRUE, include=FALSE, message=FALSE, echo=FALSE}
+######################################################## Model Running ###
+# Final data preparations
+
+brEfNA<-brEf
+brEfNA[brEf==0]<-30
+Ndat[brEf==0]<-NA
+
+brEfNACanna<-brEfCanna
+brEfNACanna[brEfCanna==0]<-30
+NdatCanna[brEfCanna==0]<-NA
+
+saDat[is.na(saDat)]<-NA
+Pdat[is.na(Pdat)]<-NA
+
+
+results <- run.jags(popModSim, n.chains=4, adapt=MCMCadapt, burnin=MCMCburnin, sample=MCMCsample, thin=MCMCthin, method="parallel")
+```
+
+
+
+```{r summariesSIM, message=FALSE, warning=FALSE, cache=TRUE, include=FALSE}
+
+summaries<-summary(results)
+if(MCMCdetails==TRUE)
+{
+plot(results,plot.type=c("trace","histogram"), vars=c("b0","b1","b2","rho1","sf0","sj0","sa0","varA","varB","varF","varJ","C"))
+  }
+```
+
+
+
+```{r PriorPosteriors1SIM, echo=FALSE, cache=FALSE, fig.cap="Results from simulated model fit. The prior (solid black curves) and posterior (salmon histograms) of the key parameters participating in the model. Dashed lines indicate the underlying true parameter value.", fig.height=8, fig.width=6}
+
+######################################################## Prior-posterior plots ###
+chains<-mcmc(results)
+coda<-as.data.frame(chains$mcmc[[1]])
+
+par(mfrow=c(3,2))
+# Baseline fecundity
+#Prior
+da<-0.01
+loa<-0
+hia<-1
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dbeta(am,13.45,5.85)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.2), ylab="Prob density", 
+     xlab="Coefficient", type="l", main="a. Baseline fecundity")
+# Posterior
+b0D<-exp(coda$b0)/(1+exp(coda$b0))
+f<-as.numeric(table(cut(b0D,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+abline(v=exp(b0)/(1+exp(b0)),col="grey",lwd=2,lty=2)
+
+# Effect of rain on fecundity
+#Prior
+da<-0.01
+loa<--1
+hia<-1
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dnorm(am,0,10)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.01), ylab="Prob density", 
+     xlab="Coefficient", type="l", main="b. Rain on fecundity")
+# Posterior
+b1D<-coda$b1
+f<-as.numeric(table(cut(b1D,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+abline(v=b1,col="grey",lwd=2,lty=2)
+
+# Effect of rats on fecundity
+#Prior
+da<-0.01
+loa<--1
+hia<-1
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dnorm(am,0,10)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.01), ylab="Prob density", 
+     xlab="Coefficient", type="l", main="c. Rats on fecundity")
+# Posterior
+b2D<-coda$b2
+f<-as.numeric(table(cut(b2D,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+abline(v=b1,col="grey",lwd=2,lty=2)
+
+# Residual var in fecundity
+#Prior
+da<-0.1
+loa<-0
+hia<-20
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dgamma(am,0.01,0.01)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.05),ylab="Prob density", 
+     xlab="Coefficient", type="l", main="d. Variability in fecundity")
+# Posterior
+varBD<-coda$varB
+f<-as.numeric(table(cut(varBD,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+abline(v=sdB^2,col="grey",lwd=2,lty=2)
+
+# Baseline fledgling survival
+#Prior
+muu<-rbeta(100000,111,236) # Compound pre-breeder survival
+musj<-rbeta(100000,172.55,30.45) 
+musf<-muu/musj^3
+musfH<-hist(musf, breaks=50, plot=FALSE)
+fd<-musfH$counts
+fd<-fd/sum(fd)
+am<-musfH$mids
+plot(am,fd,lwd=2,lty=1, xlim=c(0,1), ylim=c(0,0.1), ylab="Prob density", 
+     xlab="Coefficient", type="l", main="e. Baseline fledg. surv.")
+# Posterior
+sf0D<-exp(coda$sf0)/(1+exp(coda$sf0))
+fh<-hist(sf0D, breaks=musfH$breaks, plot=FALSE)
+f<-fh$counts
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+abline(v=exp(sf0)/(1+exp(sf0)),col="grey",lwd=2,lty=2)
+
+# Residual var in fledg surv
+#Prior
+da<-0.1
+loa<-0
+hia<-20
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dgamma(am,0.01,0.01)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.05),ylab="Prob density", 
+     xlab="Coefficient", type="l", main="f. Variability in fledg surv")
+# Posterior
+varFD<-coda$varF
+f<-as.numeric(table(cut(varFD,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+abline(v=sdF^2,col="grey",lwd=2,lty=2)
+
+
+par(mfrow=c(1,1))
+```
+
+
+
+```{r PriorPosteriors2SIM, echo=FALSE, cache=FALSE, fig.cap="(Ctd from previous fig.) Results from simulated model fit. The prior (solid black curves) and posterior (salmon histograms) of the key parameters participating in the model. Dashed lines indicate true parameter values.", fig.height=8, fig.width=6} 
+
+par(mfrow=c(3,2))
+# Baseline juvenile survival
+#Prior
+da<-0.01
+loa<-0
+hia<-1
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dbeta(am,172.55,30.45) 
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.2), ylab="Prob density", 
+     xlab="Coefficient", type="l", main="g. Baseline juv surv.")
+# Posterior
+sj0D<-exp(coda$sj0)/(1+exp(coda$sj0))
+f<-as.numeric(table(cut(sj0D,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+abline(v=exp(sj0)/(1+exp(sj0)),col="grey",lwd=2,lty=2)
+
+
+# Residual var in juv surv
+#Prior
+da<-0.1
+loa<-0
+hia<-20
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dgamma(am,0.01,0.01)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.05),ylab="Prob density", 
+     xlab="Coefficient", type="l", main="h. Variability in juv surv")
+# Posterior
+varJD<-coda$varJ
+f<-as.numeric(table(cut(varJD,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+abline(v=sdJ^2,col="grey",lwd=2,lty=2)
+
+# Baseline adult survival
+#Prior
+da<-0.01
+loa<-0
+hia<-1
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dbeta(am,42.14, 5.21) 
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.2), ylab="Prob density", 
+     xlab="Coefficient", type="l", main="i. Baseline adult surv.")
+# Posterior
+sa0D<-exp(coda$sa0)/(1+exp(coda$sa0))
+f<-as.numeric(table(cut(sa0D,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+abline(v=exp(sa0)/(1+exp(sa0)),col="grey",lwd=2,lty=2)
+
+# Residual var in adult surv
+#Prior
+da<-0.1
+loa<-0
+hia<-20
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dgamma(am,0.01,0.01)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.05),ylab="Prob density", 
+     xlab="Coefficient", type="l", main="j. Variability in adult surv")
+# Posterior
+varAD<-coda$varA
+f<-as.numeric(table(cut(varAD,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+abline(v=sdA^2,col="grey",lwd=2,lty=2)
+
+# Density dependence
+#Prior
+da<-0.000001
+loa<-0
+hia<-0.0002
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+fd<-dgamma(am,1,1000) 
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.05),ylab="Prob density", 
+     xlab="Coefficient", type="l", main="k. Density dependence")
+# Posterior
+rho1D<-coda$rho1
+f<-as.numeric(table(cut(rho1D,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+abline(v=rho1,col="grey",lwd=2,lty=2)
+
+# Fecundity scaling for Canna
+#Prior
+cD<-rbeta(100000,1,1)
+Ca<-0.5+cD
+CH<-hist(Ca, breaks=50, plot=FALSE)
+fd<-CH$counts
+fd<-fd/sum(fd)
+am<-CH$mids
+plot(am,fd,lwd=2,lty=1, xlim=c(0.5,1.5), ylim=c(0,0.2), ylab="Prob density", 
+     xlab="Coefficient", type="l", main="l. Scaling for Canna breeding")
+# Posterior
+CD<-coda$C
+fh<-hist(CD, breaks=CH$breaks, plot=FALSE)
+f<-fh$counts
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+lines(am,fd,lwd=2,lty=1)
+abline(v=C,col="grey",lwd=2,lty=2)
+
+
+
+par(mfcol=c(1,1))
+```
+
+
+
+
+```{r ReconstructionsSIM, echo=FALSE, cache=FALSE, fig.cap="Validation results from simulated model fit. Reconstructed trajectories in solid lines (with associated credible band). Dashed grey lines indicate the underlying true trajectories.", fig.height=8, fig.width=6}
+######################################################## Population trends ###
+par(mfcol=c(3,2))
+
+
+# Fledglings
+rang<-(1:tmax)
+T<-ymin+(1:length(rang))
+plot(T,summaries[rang,2], type="l", ylim=c(0,100000), xlab="Time (years)", ylab="N", main="a. Fledglings")
+polygon(c(T,rev(T)),c(summaries[rang,1],rev(summaries[rang,3])), border=NA, col="salmon")
+lines(T,summaries[rang,2])
+lines(T,N,col="grey",lwd=2,lty=2)
+
+# Recruits
+rang<-tmax+(1:tmax)
+T<-ymin+(1:length(rang))
+plot(T,summaries[rang,2], type="l", ylim=c(0,40000), xlab="Time (years)", ylab="R", main="c. Recruits")
+polygon(c(T,rev(T)),c(summaries[rang,1],rev(summaries[rang,3])), border=NA, col="salmon")
+lines(T,summaries[rang,2])
+lines(T,R,col="grey",lwd=2,lty=2)
+
+# Adults
+rang<-2*tmax+(1:tmax)
+T<-ymin+(1:length(rang))
+plot(T,summaries[rang,2], type="l", ylim=c(0,250000), xlab="Time (years)", ylab="P", main="e. Adults")
+polygon(c(T,rev(T)),c(summaries[rang,1],rev(summaries[rang,3])), border=NA, col="salmon")
+lines(T,summaries[rang,2])
+lines(T,P,col="grey",lwd=2,lty=2)
+
+
+
+
+######################################################## Demographic trends ###
+
+# Fecundity
+rang<-3*tmax+(1:(tmax-4))
+T<-ymin+(1:length(rang))
+plot(T,2*summaries[rang,2], type="l", ylim=c(0,1), xlab="Time (years)", ylab="b", main="b. Fecundity")
+polygon(c(T,rev(T)),c(2*summaries[rang,1],rev(2*summaries[rang,3])), border=NA, col="salmon")
+lines(T,2*summaries[rang,2])
+lines(T,2*b[5:length(b)],col="grey",lwd=2,lty=2)
+
+# Recruitment
+rang<-(3*tmax)+(tmax-4)+(1:(tmax-4))
+T<-ymin+(1:length(rang))
+plot(T,summaries[rang,2], type="l", ylim=c(0,1), xlab="Time (years)", ylab="rec", main="d. Recruitment")
+polygon(c(T,rev(T)),c(summaries[rang,1],rev(summaries[rang,3])), border=NA, col="salmon")
+lines(T,summaries[rang,2])
+lines(T,rec[5:length(rec)],col="grey",lwd=2,lty=2)
+
+# Adult Survival
+rang<-(3*tmax)+2*(tmax-4)+(1:(tmax-4))
+T<-ymin+(1:length(rang))
+plot(T,summaries[rang,2], type="l", ylim=c(0,1), xlab="Time (years)", ylab="sa", main="f. Adult Survival")
+polygon(c(T,rev(T)),c(summaries[rang,1],rev(summaries[rang,3])), border=NA, col="salmon")
+lines(T,summaries[rang,2])
+lines(T,sa[5:length(sa)],col="grey",lwd=2,lty=2)
+
+par(mfrow=c(1,1))
+```
+
+
+# Validation with simulated data
+
+Simulated data offer a sanity check for the performance of the model. General practice is to generate synthetic data from the model to be used for fitting to the real data, using plausible parameter values, and then proceed to fit the model to these data. Given that there is, by definition, no model misspecification in this procedure, assuming that the synthetic data provided are adequate, the model fitting should be able to retrieve the underlying parameters and reconstruct the true demographic trajectories. 
+
+The specifications of the key model parameters were selected to be the median values retrieved from the real data in model fitting. Variations in data collection effort were set to be identical to the real data. The parameter specification and simulation code for the system is provided in Appendix II. The simulated data generated in this way are shown in Fig. \@ref(fig:SimulatedData). 
+
+Fitting this model to the simulated data converges and gives realistic reconstructions of the (synthetic and hence known) simulation parameters (Figs \@ref(fig:PriorPosteriors1SIM) & \@ref(fig:PriorPosteriors2SIM)) and data (Fig. \@ref(fig:ReconstructionsSIM)). However, there are also some key warnings arising from this validation exercise. First, it appears particularly difficult to infer the true effects of covariates. Both artificial covariates were assigned a small effect compared to their prior range, and the priors did not predispose them to have a negative effect (despite the fact that both rainfall and rats are widely expected to have a negative effect). With these naive priors, the model remained agnostic about covariate effects (Figs \@ref(fig:PriorPosteriors1SIM)b & c). Of course, this is not a definitive indication of the model's ability to derive covariate effects from the real data because both the covariate values and underlying effect magnitudes were user-specified for the simulation. However, the simulated and real data are similar in temporal extent. It was therefore interesting that the temporally complete set of rainfall data (Fig. \@ref(fig:SimulatedData)a) appeared no more informative in the final results than the severely curtained rat data (Fig. \@ref(fig:SimulatedData)c).
+
+A second caveat prompted by this validation exercise relates to our ability to infer the strength of density dependence. Both the parameter retrieval (Fig. \@ref(fig:PriorPosteriors2SIM)k) and trajectory reconstruction (Fig. \@ref(fig:ReconstructionsSIM)d) show some disagreement with the underlying truth. This finding justifies the decision not to use the more elaborate models of density dependence developed in Section \@ref(DDBurrow).
+
+
+# Sensitivity to population estimates
+A particularly difficult aspect of the above analysis is that it relies heavily on estimates of population size (and associated confidence intervals) that, as well as being irregular and intermittent, have been generated by different field methodologies and estimation methods. An apparently strong deviation from the established estimation approaches is the most recent population estimate obtained by @Inger2022. This led to an effective doubling of the population estimate due to the analytical approach used to derive apparently suitable habitat for nesting. The resulting number is quite influential for the modelling undertaken here (particularly for the forecasts and future scenarios) and therefore the analytical approach of @Inger2022 deserves closer examination. 
+
+Particular strengths of the approach are its novel use of model-based components that employ species-habitat modelling frameworks to derive suitable areas for the shearwater burrows. The decision to quantify uncertainty at parts of the analysis is good and the logical sequence of the analysis steps in unambiguous and well justified. The approach also has certain limitations that impact directly on our work here. In particular: 
+ 
+1. In the analysis, there is the decision to use a continuous (beta-distributed) model to analyse count data of burrows. The rationale for this is not explained and it is unclear what the implications of this decision might be for the final point estimate. 
+2. The approach to statistical inference is stepwise and not integrated, which has important implications for the uncertainty in the population estimate. There are four broad sources of uncertainty (three of which are estimated but then not used in the calculation of the final population estimate).
+   - Uncertainty in the estimation of suitable map cells and suitable area within each cell in the map. This uncertainty is not propagated to the end result. 
+   - Uncertainty in the habitat model used to estimate burrow densities in each map cell. These are presumably generated by the glm but not propagated to the end (Fig. 37 in @Inger2022 indicates they are probably quite large).
+   - Three random effects associated with callback rates in model-fitting and calibration data sets, that are dropped from the generation of the final estimate without explanation. This begs the question, if the variability captured by these random effects is not important, why were they included in the Bayesian model in the first place?
+   - A potential minor point is whether sensitivity/specificity are balanced for the decision on how to discount proximate holes as double entrances for burrows.
+3. There is no validation exercise shown using either simulated data or subsampling and cross-validation. Until such ground-truthing is undertaken, the estimates from the method are difficult to trust.
+ 
+The above shortcomings require us to carry out a sensitivity analysis of the results obtained in Section \@ref(Fit1). Given the (numerical and methodological) divergence of the 2022 population estimate from historical surveys, and also, considering that its high value might be generating over-optimistically increasing trends for the population, we were interested to see if the increasing tendency predicted by the fitted model in Section \@ref(Fit1) would remain if more modest numbers were used. We detail our sensitivity experiments in this direction in Section \@ref(LowIngerPop).
+
+Other features of the model in Section \@ref(Fit1) are also of interest. In particular, the suggestion that the population undergoes precipitous declines in adult survival (the most prominent one, observed in the early 80s). It is unlikely that such features would be driven purely by the 2022 estimate, so we were interested to see whether they were an artefact of overconfidence in the complete time series of population estimates. We detail our sensitivity experiments in this direction in Section \@ref(LowPrecisionPop).
+ 
+## Adjusting 2022 estimate downwards {#LowIngerPop}
+The major difference between the @Inger2022 estimate and previous estimates is in the total area considered to make up the breeding colony (209ha). @Murray2003 considered the extent of the colony to be 148 ha. By scaling their burrow density and response rate estimates to a breeding area of 148 ha, @Inger2022 estimated that the number of AOBs would decrease to a total of 134,514 (95% HDI: 85,122–212,886), a comparable estimate to the 2001 estimate of 119,950 (95% CI: 106,730–133,500) AOBs. Earlier surveys, before the 2000/2001 survey, considered the colony to occupy a much smaller area – or at least focused only on the obvious shearwater greens. 
+
+**Model 2** To explore the sensitivity of our results on the reported 2022 estimate, we refitted the model by using the alternative, low estimate calculated by @Inger2022. This experiment was aimed at capturing the effect of bias in the estimate and was considered a worst-case scenario in terms of future forecasts. The results (Fig. \@ref(fig:Reconstructions2)e), indicate that the sustained recent increases of Model 1 (Fig. \@ref(fig:Reconstructions)e) were entirely down to to the @Inger2022 estimate. However, this did not affect the apparent population crash at the start of the 1980s. As a direct consequence, this version of the model also suggests that recruitment is more constrained (Fig. \@ref(fig:Reconstructions2)d), both now and in the past.
+
+**Model 3** As an additional experiment, we considered the possibility that the true population size is in-between the best and worst-case population estimates for 2022. To capture that possibility, we used the average population estimate (180,262 AOB) from the two values reported by @Inger2022. To acknowledge the fact that @Inger2022 had not propagated several sources of uncertainty into their final confidence interval for population size, and therefore they are likely to have underestimated uncertainty, we took the precautionary approach of deriving a CV based on the upper CI extreme of the high population estimate (403,915 AOB) and the lower CI extreme of the low population estimate (85,122 AOB). The results (Fig. \@ref(fig:Reconstructions3)) from this ad-hoc model averaging between Models 1 and 2 are more akin to the trajectories produced by Model 2. The conclusion from this is that even when offered the possibility of the higher 2022 population estimate, the model finds it easier to explain the data (subject to its mechanistic assumptions) by resorting to a lower recent population size (Fig. \@ref(fig:Reconstructions3)e), and a stronger density dependence (Fig. \@ref(fig:Reconstructions3)d). 
+
+
+```{r JAGSRun2,  cache=TRUE, include=FALSE, message=FALSE, echo=FALSE}
+##########################################################
+############    2. Real data specification    ############
+##########################################################
+tmax<-72 # Duration of population life, to the present
+ymin<-1950 # First calendar year for model
+
+Pdat<-rep(NA, tmax)
+cvP<-rep(0.35, tmax)
+Pdat[1976-ymin]<-116100
+cvP[1976-ymin]<-0.0827
+Pdat[1979-ymin]<-135000
+cvP[1979-ymin]<-0.0407
+Pdat[1982-ymin]<-79000
+cvP[1982-ymin]<-0.0601
+Pdat[1990-ymin]<-62800
+cvP[1990-ymin]<-0.338
+Pdat[1995-ymin]<-61500
+cvP[1995-ymin]<-0.3402
+Pdat[2001-ymin]<-124000
+cvP[2001-ymin]<-0.2601
+# Pdat[2021-ymin]<-226010 
+# cvP[2021-ymin]<-0.1540 
+Pdat[2021-ymin]<-134514 # These are the changed numbers for this scenario
+cvP[2021-ymin]<-0.2375 # These are the changed numbers for this scenario
+
+brEf<-c(0,0,0,0,0,0,0,30,30,30,30,30,30,30,30,30,30,30,0,0,30,0,30,0,0,0,0,0,0,0,0,0,0,0,48,36,0,0,0,0,0,0,0,100,84,125,91,81,77,85,76,99,93,106,110,166,171,144,154,165,153,155,173,221,28,144,48,72,0,0,0,0) # Breeding effort
+Ndat<-c(0,0,0,0,0,0,0,13, 13, 21, 15, 15, 17, 15, 19, 12, 21, 22, 0, 0, 23, 0, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21, 23, 0, 0, 0, 0, 0, 0, 0, 77, 70, 90, 80, 28, 43, 56, 55, 72, 70, 66, 63, 98, 87, 108, 106, 129, 109, 136, 88, 113, 20, 101, 31, 46, 0, 0, 0, 0)
+
+brEfCanna<-c(0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 45, 45, 45, 45, 45, 45, 45, 45, 45, 0, 45, 45, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+NdatCanna<-c(0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 26, 34, 23, 37, 33, 27, 34, 11, 0, 31, 26, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+
+saDat<-rep(NA,tmax)
+saDat[(1994:2010)-ymin]<-c(0.9842, 0.9753, 0.9835, 0.9573, 0.982, 0.9803, 0.981, 0.973, 0.9734, 0.9734, 0.9811, 0.9612, 0.9645, 0.9684, 0.9794, 0.9763, 0.9863)
+
+##########################################################
+############           3. Modelling           ############
+##########################################################
+
+######################################################## Model specification ###
+# Final data preparations
+PdatPlayback<-97945
+cvPlayback<-0.175
+
+brEfNA<-brEf
+brEfNA[brEf==0]<-30
+Ndat[brEf==0]<-NA
+
+brEfNACanna<-brEfCanna
+brEfNACanna[brEfCanna==0]<-30
+NdatCanna[brEfCanna==0]<-NA
+
+saDat[is.na(saDat)]<-NA
+Pdat[is.na(Pdat)]<-NA
+
+results2 <- run.jags(popMod, n.chains=4, adapt=MCMCadapt, burnin=MCMCburnin, sample=MCMCsample, thin=MCMCthin, method="parallel")
+
+```
+
+
+
+
+```{r summaries2, message=FALSE, warning=FALSE, cache=TRUE, include=FALSE}
+
+summaries2<-summary(results2)
+if(MCMCdetails==TRUE)
+{
+plot(results2,plot.type=c("trace","histogram"),     vars=c("b0","b1","b2","rho1","sf0","sj0","sa0","varA","varB","varF","varJ","C"))
+  }
+```
+
+
+
+
+```{r PriorPosteriors2-1, echo=FALSE, fig.cap="Results from **Model 2** (which takes low 2022 - worst-case -  population estimate). The prior (solid black curves) and posterior (salmon histograms) of the key parameters participating in the model", fig.height=8, fig.width=6, cache=FALSE}
+
+######################################################## Prior-posterior plots ###
+chains2<-mcmc(results2)
+coda2<-as.data.frame(chains2$mcmc[[1]])
+if(MCMCdetails==TRUE)
+{
+pripostPlot1(coda2)
+}
+
+```
+
+
+
+```{r PriorPosteriors2-2, echo=FALSE, cache=FALSE, fig.cap="Results from **Model 2** (which takes low 2022 - worst-case -  population estimate). The prior (solid black curves) and posterior (salmon histograms) of the key parameters participating in the model", fig.height=5.3, fig.width=6}
+if(MCMCdetails==TRUE)
+{
+pripostPlot2(coda2)
+}
+
+```
+
+
+
+
+
+```{r Reconstructions2, echo=FALSE, cache=TRUE, fig.cap="Results from **Model 2** (which takes low 2022 - worst-case -  population estimate). The reconstructed trajectories of key demographic processes and state variables in the population. Median predictions (solid line) and 95% credible intervals (salmon bands) are shown.", fig.height=8, fig.width=6}
+
+trajectories(summaries2)
+
+```
+
+
+
+
+```{r JAGSRun3,  cache=TRUE, include=FALSE, message=FALSE, echo=FALSE}
+##########################################################
+############    2. Real data specification    ############
+##########################################################
+tmax<-72 # Duration of population life, to the present
+ymin<-1950 # First calendar year for model
+
+Pdat<-rep(NA, tmax)
+cvP<-rep(0.35, tmax)
+Pdat[1976-ymin]<-116100
+cvP[1976-ymin]<-0.0827
+Pdat[1979-ymin]<-135000
+cvP[1979-ymin]<-0.0407
+Pdat[1982-ymin]<-79000
+cvP[1982-ymin]<-0.0601
+Pdat[1990-ymin]<-62800
+cvP[1990-ymin]<-0.338
+Pdat[1995-ymin]<-61500
+cvP[1995-ymin]<-0.3402
+Pdat[2001-ymin]<-124000
+cvP[2001-ymin]<-0.2601
+Pdat[2021-ymin]<-(226010+134514)/2 # Midpoint of best and worst-case scenario
+cvP[2021-ymin]<- (403915-85122)/(4*Pdat[2021-ymin]) # Conservative CV based on full range of estimates
+
+brEf<-c(0,0,0,0,0,0,0,30,30,30,30,30,30,30,30,30,30,30,0,0,30,0,30,0,0,0,0,0,0,0,0,0,0,0,48,36,0,0,0,0,0,0,0,100,84,125,91,81,77,85,76,99,93,106,110,166,171,144,154,165,153,155,173,221,28,144,48,72,0,0,0,0) # Breeding effort
+Ndat<-c(0,0,0,0,0,0,0,13, 13, 21, 15, 15, 17, 15, 19, 12, 21, 22, 0, 0, 23, 0, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21, 23, 0, 0, 0, 0, 0, 0, 0, 77, 70, 90, 80, 28, 43, 56, 55, 72, 70, 66, 63, 98, 87, 108, 106, 129, 109, 136, 88, 113, 20, 101, 31, 46, 0, 0, 0, 0)
+
+brEfCanna<-c(0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 45, 45, 45, 45, 45, 45, 45, 45, 45, 0, 45, 45, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+NdatCanna<-c(0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 26, 34, 23, 37, 33, 27, 34, 11, 0, 31, 26, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+
+saDat<-rep(NA,tmax)
+saDat[(1994:2010)-ymin]<-c(0.9842, 0.9753, 0.9835, 0.9573, 0.982, 0.9803, 0.981, 0.973, 0.9734, 0.9734, 0.9811, 0.9612, 0.9645, 0.9684, 0.9794, 0.9763, 0.9863)
+
+##########################################################
+############           3. Modelling           ############
+##########################################################
+
+######################################################## Model specification ###
+# Final data preparations
+PdatPlayback<-97945
+cvPlayback<-0.175
+
+brEfNA<-brEf
+brEfNA[brEf==0]<-30
+Ndat[brEf==0]<-NA
+
+brEfNACanna<-brEfCanna
+brEfNACanna[brEfCanna==0]<-30
+NdatCanna[brEfCanna==0]<-NA
+
+saDat[is.na(saDat)]<-NA
+Pdat[is.na(Pdat)]<-NA
+
+results3 <- run.jags(popMod, n.chains=4, adapt=MCMCadapt, burnin=MCMCburnin, sample=MCMCsample, thin=MCMCthin, method="parallel")
+
+```
+
+
+
+
+```{r summaries3, message=FALSE, warning=FALSE, cache=TRUE, include=FALSE}
+
+summaries3<-summary(results3)
+if(MCMCdetails==TRUE)
+{
+plot(results3,plot.type=c("trace","histogram"),     vars=c("b0","b1","b2","rho1","sf0","sj0","sa0","varA","varB","varF","varJ","C"))
+  }
+```
+
+
+
+
+```{r PriorPosteriors3-1, echo=FALSE, fig.cap="Results from **Model 3** (which takes intermediate 2022 - but low precision -  population estimate). The prior (solid black curves) and posterior (salmon histograms) of the key parameters participating in the model", fig.height=8, fig.width=6, cache=FALSE}
+
+######################################################## Prior-posterior plots ###
+chains3<-mcmc(results3)
+coda3<-as.data.frame(chains3$mcmc[[1]])
+if(MCMCdetails==TRUE)
+{
+pripostPlot1(coda3)
+}
+
+```
+
+
+
+```{r PriorPosteriors3-2, echo=FALSE, cache=FALSE, fig.cap="Results from **Model 3** (which takes intermediate 2022 - but low precision -  population estimate). The prior (solid black curves) and posterior (salmon histograms) of the key parameters participating in the model", fig.height=5.3, fig.width=6}
+if(MCMCdetails==TRUE)
+{
+pripostPlot2(coda3)
+}
+
+```
+
+
+```{r Reconstructions3, echo=FALSE, cache=TRUE, fig.cap="Results from **Model 3** (which takes intermediate 2022 - but low precision -  population estimate). The reconstructed trajectories of key demographic processes and state variables in the population. Median predictions (solid line) and 95% credible intervals (salmon bands) are shown.", fig.height=8, fig.width=6}
+
+trajectories(summaries3)
+
+```
+
+
+## Increasing uncertainty of all population estimates {#LowPrecisionPop}
+Although the 2022 estimate is very influential for forecast and scenario running of the model, historical population estimates are also likely to inflence parameter estimates, and therefore affect the fitted model's behaviour. To examine the possibility that all population estimates, both historical and recent, were overconfident, we artificially inflated the coefficients of variation for all surveys. In the absense of further information for which surveys may be more or less precise, we applied the same scaling across the entire time series. Two such scalings were examined:
+
+**Model 4**: A doubling of CVs. This was comparable to the inflation of the 2022 CV between Model 1 (CV=0.154) and  Model 3 (CV=0.442, an inflation of 2.87). The results of this experiment (Fig. \@ref(fig:Reconstructions4)) were similar from the results obtained via Model 1. Therefore, even though the model was given more flexibility to  ignore fluctuations in the observations, the relative magnitude of the point estimates drove it to conclude that the population is currently increasing well beyond historical levels.
+
+**Model 5**: A scaling of CVs by an order of magnitude. This was such a large increase in observation uncertainty that it led the model to infer a completely flat trajectory, across the history of observation (Fig. \@ref(fig:Reconstructions5)).
+
+```{r JAGSRun4,  cache=TRUE, include=FALSE, message=FALSE, echo=FALSE}
+##########################################################
+############    2. Real data specification    ############
+##########################################################
+tmax<-72 # Duration of population life, to the present
+ymin<-1950 # First calendar year for model
+
+Pdat<-rep(NA, tmax)
+cvP<-rep(0.35, tmax)
+Pdat[1976-ymin]<-116100
+cvP[1976-ymin]<-0.0827
+Pdat[1979-ymin]<-135000
+cvP[1979-ymin]<-0.0407
+Pdat[1982-ymin]<-79000
+cvP[1982-ymin]<-0.0601
+Pdat[1990-ymin]<-62800
+cvP[1990-ymin]<-0.338
+Pdat[1995-ymin]<-61500
+cvP[1995-ymin]<-0.3402
+Pdat[2001-ymin]<-124000
+cvP[2001-ymin]<-0.2601
+Pdat[2021-ymin]<-226010 
+cvP[2021-ymin]<-0.1540 
+
+cvP<-2*cvP
+
+brEf<-c(0,0,0,0,0,0,0,30,30,30,30,30,30,30,30,30,30,30,0,0,30,0,30,0,0,0,0,0,0,0,0,0,0,0,48,36,0,0,0,0,0,0,0,100,84,125,91,81,77,85,76,99,93,106,110,166,171,144,154,165,153,155,173,221,28,144,48,72,0,0,0,0) # Breeding effort
+Ndat<-c(0,0,0,0,0,0,0,13, 13, 21, 15, 15, 17, 15, 19, 12, 21, 22, 0, 0, 23, 0, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21, 23, 0, 0, 0, 0, 0, 0, 0, 77, 70, 90, 80, 28, 43, 56, 55, 72, 70, 66, 63, 98, 87, 108, 106, 129, 109, 136, 88, 113, 20, 101, 31, 46, 0, 0, 0, 0)
+
+brEfCanna<-c(0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 45, 45, 45, 45, 45, 45, 45, 45, 45, 0, 45, 45, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+NdatCanna<-c(0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 26, 34, 23, 37, 33, 27, 34, 11, 0, 31, 26, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+
+saDat<-rep(NA,tmax)
+saDat[(1994:2010)-ymin]<-c(0.9842, 0.9753, 0.9835, 0.9573, 0.982, 0.9803, 0.981, 0.973, 0.9734, 0.9734, 0.9811, 0.9612, 0.9645, 0.9684, 0.9794, 0.9763, 0.9863)
+
+##########################################################
+############           3. Modelling           ############
+##########################################################
+
+######################################################## Model specification ###
+# Final data preparations
+PdatPlayback<-97945
+cvPlayback<-0.175
+
+brEfNA<-brEf
+brEfNA[brEf==0]<-30
+Ndat[brEf==0]<-NA
+
+brEfNACanna<-brEfCanna
+brEfNACanna[brEfCanna==0]<-30
+NdatCanna[brEfCanna==0]<-NA
+
+saDat[is.na(saDat)]<-NA
+Pdat[is.na(Pdat)]<-NA
+
+
+results4 <- run.jags(popMod, n.chains=4, adapt=MCMCadapt, burnin=MCMCburnin, sample=MCMCsample, thin=MCMCthin, method="parallel")
+
+```
+
+```{r summaries4, message=FALSE, warning=FALSE, cache=TRUE, include=FALSE}
+
+summaries4<-summary(results4)
+if(MCMCdetails==TRUE)
+{
+plot(results4,plot.type=c("trace","histogram"),     vars=c("b0","b1","b2","rho1","sf0","sj0","sa0","varA","varB","varF","varJ","C"))
+}
+
+```
+
+```{r PriorPosteriors4-1, echo=FALSE, fig.cap="Results from **Model 4** (which inflates CVs across all surveys by a factor of 2). The prior (solid black curves) and posterior (salmon histograms) of the key parameters participating in the model", fig.height=8, fig.width=6, cache=FALSE}
+
+######################################################## Prior-posterior plots ###
+chains4<-mcmc(results4)
+coda4<-as.data.frame(chains4$mcmc[[1]])
+if(MCMCdetails==TRUE)
+{
+pripostPlot1(coda4)
+}
+
+```
+
+```{r PriorPosteriors4-2, echo=FALSE, cache=FALSE, fig.cap="Results from **Model 4** (which inflates CVs across all surveys by a factor of 2). The prior (solid black curves) and posterior (salmon histograms) of the key parameters participating in the model", fig.height=5.3, fig.width=6}
+if(MCMCdetails==TRUE)
+{
+pripostPlot2(coda4)
+}
+
+```
+
+```{r Reconstructions4, echo=FALSE, cache=TRUE, fig.cap="Results from **Model 4** (which inflates CVs across all surveys by a factor of 2). The reconstructed trajectories of key demographic processes and state variables in the population. Median predictions (solid line) and 95% credible intervals (salmon bands) are shown.", fig.height=8, fig.width=6}
+
+trajectories(summaries4)
+
+```
+
+
+
+```{r JAGSRun5,  cache=TRUE, include=FALSE, message=FALSE, echo=FALSE}
+##########################################################
+############    2. Real data specification    ############
+##########################################################
+tmax<-72 # Duration of population life, to the present
+ymin<-1950 # First calendar year for model
+
+Pdat<-rep(NA, tmax)
+cvP<-rep(0.35, tmax)
+Pdat[1976-ymin]<-116100
+cvP[1976-ymin]<-0.0827
+Pdat[1979-ymin]<-135000
+cvP[1979-ymin]<-0.0407
+Pdat[1982-ymin]<-79000
+cvP[1982-ymin]<-0.0601
+Pdat[1990-ymin]<-62800
+cvP[1990-ymin]<-0.338
+Pdat[1995-ymin]<-61500
+cvP[1995-ymin]<-0.3402
+Pdat[2001-ymin]<-124000
+cvP[2001-ymin]<-0.2601
+Pdat[2021-ymin]<-226010 
+cvP[2021-ymin]<-0.1540 
+
+cvP<-10*cvP
+
+brEf<-c(0,0,0,0,0,0,0,30,30,30,30,30,30,30,30,30,30,30,0,0,30,0,30,0,0,0,0,0,0,0,0,0,0,0,48,36,0,0,0,0,0,0,0,100,84,125,91,81,77,85,76,99,93,106,110,166,171,144,154,165,153,155,173,221,28,144,48,72,0,0,0,0) # Breeding effort
+Ndat<-c(0,0,0,0,0,0,0,13, 13, 21, 15, 15, 17, 15, 19, 12, 21, 22, 0, 0, 23, 0, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21, 23, 0, 0, 0, 0, 0, 0, 0, 77, 70, 90, 80, 28, 43, 56, 55, 72, 70, 66, 63, 98, 87, 108, 106, 129, 109, 136, 88, 113, 20, 101, 31, 46, 0, 0, 0, 0)
+
+brEfCanna<-c(0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 45, 45, 45, 45, 45, 45, 45, 45, 45, 0, 45, 45, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+NdatCanna<-c(0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 26, 34, 23, 37, 33, 27, 34, 11, 0, 31, 26, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+
+saDat<-rep(NA,tmax)
+saDat[(1994:2010)-ymin]<-c(0.9842, 0.9753, 0.9835, 0.9573, 0.982, 0.9803, 0.981, 0.973, 0.9734, 0.9734, 0.9811, 0.9612, 0.9645, 0.9684, 0.9794, 0.9763, 0.9863)
+
+##########################################################
+############           3. Modelling           ############
+##########################################################
+
+######################################################## Model specification ###
+# Final data preparations
+PdatPlayback<-97945
+cvPlayback<-0.175
+
+brEfNA<-brEf
+brEfNA[brEf==0]<-30
+Ndat[brEf==0]<-NA
+
+brEfNACanna<-brEfCanna
+brEfNACanna[brEfCanna==0]<-30
+NdatCanna[brEfCanna==0]<-NA
+
+saDat[is.na(saDat)]<-NA
+Pdat[is.na(Pdat)]<-NA
+
+results5 <- run.jags(popMod, n.chains=4, adapt=MCMCadapt, burnin=MCMCburnin, sample=MCMCsample, thin=MCMCthin, method="parallel")
+
+```
+
+```{r summaries5, message=FALSE, warning=FALSE, cache=TRUE, include=FALSE}
+
+summaries5<-summary(results5)
+if(MCMCdetails==TRUE)
+{
+plot(results5,plot.type=c("trace","histogram"),     vars=c("b0","b1","b2","rho1","sf0","sj0","sa0","varA","varB","varF","varJ","C"))
+}
+
+```
+
+```{r PriorPosteriors5-1, echo=FALSE, fig.cap="Results from **Model 5** (which inflates CVs across all surveys by a factor of 10). The prior (solid black curves) and posterior (salmon histograms) of the key parameters participating in the model", fig.height=8, fig.width=6, cache=FALSE}
+
+######################################################## Prior-posterior plots ###
+chains5<-mcmc(results5)
+coda5<-as.data.frame(chains5$mcmc[[1]])
+if(MCMCdetails==TRUE)
+{
+pripostPlot1(coda5)
+}
+
+```
+
+```{r PriorPosteriors5-2, echo=FALSE, cache=FALSE, fig.cap="Results from **Model 5** (which inflates CVs across all surveys by a factor of 10). The prior (solid black curves) and posterior (salmon histograms) of the key parameters participating in the model", fig.height=5.3, fig.width=6}
+if(MCMCdetails==TRUE)
+{
+pripostPlot2(coda5)
+}
+
+```
+
+```{r Reconstructions5, echo=FALSE, cache=TRUE, fig.cap="Results from **Model 5** (which inflates CVs across all surveys by a factor of 10). The reconstructed trajectories of key demographic processes and state variables in the population. Median predictions (solid line) and 95% credible intervals (salmon bands) are shown.", fig.height=8, fig.width=6}
+
+trajectories(summaries5)
+
+```
+
+## Deriving area-independent proxies of population size
+We discuss this suggestion here for completeness, although it was not within the remit of this project. There are several differences in the field methodologies used by surveys and resultant estimates across the last 72 years. Some of these relate to the definition of an occupied burrow or the determination of it being used for breeding. For the purposes of population, the most influential differences are likely to be on the way these surveys of occupied burrows are scaled up to population sizes. The scaling is mediated by some calculation of the total area taken up by the colony. Although the overall area is likely to have changed over the years, it certainly has not changed to the extent implied by the reported surveys and it is also unlikely to have decreased in area, since unused burrows take many years to fill in, or collapse. The possibility therefore remains of using an area-independent index of population density as a proxy for population size. A model fitted to such data would be of little use for population estimation, but it might yield more robust results on population and demographic trends, than the models presented above. This approach was not followed here because derivation of such a population index may require a return to historical data files.
+
+## Key messages from sensitivity analysis {#SensitivityKey}
+The 2022 population estimate is fundamentally different in magnitude and estimation methodology to the historical population estimates. It is also a very influential point, as was seen by the comparison between Models 1 and 2. Retaining the relative differences between the individual point estimates, but taking them as less precise either makes little difference to the reconstructed trajectories (comparison between Models 4 and 1), or is tantamount to throwing away all the information in these count data (comparison between models 5 and 1). Crucially, when precision is taken to be very low (Model 5), the available demographic data are simply not enough to generate informative trends in the population trajectories. A key feature of Models 1-4 is the precipitous decline in adult numbers in the start of the 1980s. Examining whether this was a true phenomenon or an artefact of discrepancies in the methodology of historical population estimation would require further experimentation. However, such work would only be valuable for reconstructing the past, not predicting the future, since the main determining factor for future trends seems to be the 2022 count (compare the steeply increasing trends predicted by Models 1&4 with the stable population predictions from Models 2&3). Model 3 seems to be the most parsimonious in this sense. It affords some credibility to historical counts, but encompasses both possibilities of a low and high count for 2022. Therefore, it was decided that Model 3 would be the most suitable vehicle for investigation of candidate covariates, forecasts and counterfactuals. 
+
+# Examination of covariates
+
+We have prioritised two hypotheses that could be explored by use of covariates (additional covariate suggestions and comments on data availability are discussed in the "Data collation and literature review", also produced under this project). Not all suggestions have been implemented during the life of this project, but we record them here for future reference. 
+
+## Rainfall
+There is evidence [@Thompson1987] that heavy rainfall events during the incubation period can impact the breeding success of birds at Rum. Heavy rain was the strongest effect on their breeding success.  Rainfall and relative burrow quality (i.e., susceptibility to flooding and hence egg loss) may also be important in driving density dependent regulation of the colony if adults, in effect, compete for a finite but variable supply of high-quality nest sites (as defined by susceptibility to flooding). Under such a scenario, if rainfall regime alters as an effect of climate change, the number of burrows in which there is a reliably high chance of hatching an egg may change, increasing or reducing competition among birds for good quality nest burrows (noting that birds are more likely to attempt to move to a new site if they experience breeding failure in the previous year). In essence, this argues for an interaction term between density dependence and rainfall in the breeding success part of the model. 
+
+Our focus was on determining a reliable index of rainfall that could be incorporated into the model. A monthly rain gauge at the colony that was maintained for a number of years by the NNR team is no longer active, but it might help inform calibration of rainfall at the colony against data sets from elsewhere. There are Historic Station Data for Tiree 1931 to 2022, for Stornoway Airport 1873 to 2022, and for Dunstaffnage (near Oban) 1972 to 2022. All of these give monthly totals (mm) for all the years in their respective time series. 
+
+There are also regional means available for North and West Scotland. Rum lies on the boundary between those two comparatively large regions. So, a mean of the data for West and North Scotland would be one option. 
+
+In choosing a proxy, we considered the following three questions:
+
+1) *Is rain in a particular time in the year likely to be most influential?* The period between May and June is the most influential since these months correspond to the incubation period. During July and August the chicks will have grown and be less vulnerable to risk of flooding mortality. 
+
+2) *Which demographic rate is most likely to be affected?* It was considered that only breeding success would be affected (main effect is on hatching success a component of breeding success). Chick survival tends to be relatively high.
+
+3) *Should we be aggregating rainfall over a specific time window, to try and capture flooding?* The available data from the Met Office are monthly totals (mm) of rain. If it was possible to look at daily rainfall data there might be merit in defining days with above a certain threshold as “very wet” as those events are likely to be more important than small amounts of rain every day. But we do not have easy access to such data.
+ 
+Here, we have used the aggregated rainfall data for the period May-June from Tiree. Admittedly, Tiree is one of the driest places in Scotland, compared to Rum, one of the wettest places, but it was best to use a consistent and proximate index of relative amounts of rainfall. To account for any differences in rainfall between Tiree and Rum, we also used a partial and intermittent time series of equivalent rainfall measurements for Rum. Fecundity was directly linked to Rum rainfall, and the missing values from Rum were imputed simultaneously by linking Rum to Tiree rainfall by a stochastic process:
+
+$$R_{Rum}\sim N(R_{Tiree}+\Delta R, \sigma_R)$$
+hence allowing the bias ($\Delta R$) and dispersion ($\sigma_R$) between the rainfall on the two islands to be extracted from the data, from times when simultaneous measurements were available. This imputation process was considered necessary, despite introducing two nuisance parameters.The effects of rainfall on the reconstructed dynamics of the Rum population are explored graphically in Figs 14-17.
+
+
+## Rat densities
+During steering group meetings we discussed possible mechanisms that might influence levels of rat depredation in the shearwater colony and associated time-lagged drivers that might potentially generate some signal in the breeding success data given paucity of direct data on the rats and their potential impacts. Generally, shearwaters and rats simply do not co-exist because rats can easily predate eggs and chicks. Therefore, ecologically, it is intriguing that the large (and apparently thriving) shearwater colony on Rum has been maintained without any evidence of large scale immigration despite the presence of an island population of brown rats.    
+
+Rats are found in the Rum shearwater colony but at very much lower densities than around the coast and there is no direct evidence of depredation of eggs or chicks.  So, it seems that there is something specific to Rum which has prevented the growth of a rat population to a sufficiently large size that could drive shearwater population decline.  One possibility is that the colony is in effect like an island within the larger island of Rum.  The shearwater colony is situated on mountain slopes in free-draining soils suitable for nest burrows.  Between the colony and the coastal fringe (where rats are abundant) there is essentially a broad buffer ring of wet moorland, which is sub-optimal habitat for rats, although, with riverine corridors along which it would be easier for rats to travel to reach the colony. It may therefore be postulated that a combination of limited food supply and harsh (cold) weather conditions over the winter months within the mountainous colony area prevents a self-sustaining (sub-) population of rats becoming established in the colony.  
+
+Within some overall situation such as this there could however perhaps be fluctuations in summer rat populations (and any associated depredation pressure on viable eggs/chicks)  whereby levels of rat depredation in any breeding season (Year n) could potentially be impacted by either or both of:
+
+*	shearwater breeding success (itself linked to spring rainfall) in the preceding breeding season (Year n-1), such that poor breeding success would in effect leave more food resource (abandoned eggs or dead chicks) in the colony that could be scavenged by rats in the colony over the following winter (across end Year n-1 and beginning Year n),
+
+*	severity of winter weather (across end Year n-1 and beginning Year n).    
+
+Also, in relation to the first point, some catastrophic event outwith the current colony  norms, such as mass mortality of birds caused by Avian Flu, could also generate an unusually abundant winter food resource in the colony.
+
+The sparsity of data on rat abundance did not permit us to examine the pest as a covariate of breeding success, but this should be a monitored variable for future investigations with this model. It is our understanding that the National Nature Reserve team on Rum are currently trialing revised methods for monitoring rat activity in the colony, based on a report commissioned from the RSPB Biosecurity for Life Team.
+
+
+
+```{r JAGSModelCovariates, echo=FALSE}
+
+###### Model statement ######
+popMod <- "model{
+
+### MAIN LOOP ###
+for(t in 5:(tmax))
+{
+
+  # Covariate imputation
+ 
+  rainRum[t]~dnorm(rain[t]+muRain,precRain)
+  
+  # Fecundity (process)
+  epsB[t]~dnorm(0,precB)
+  logit(bAll[t])<-b0+b1*rainRum[t]+b2*rainRum[t]^2+epsB[t] # All fecundity
+  b[t]<-0.5*bAll[t] # Halving, to get female chicks
+  N[t]~dbin(b[t],P[t-1]) #Female fledglings
+  
+  # Fecundity (observation)
+  Ndat[t]~dbinom(bAll[t], brEfNA[t]) # Rum counts
+  NdatCanna[t]~dbinom(C*bAll[t], brEfNACanna[t]) # Canna counts
+  
+  # Recruitment
+  epsF[t]~dnorm(0,precF) # Fledgling variability in survival
+  epsJ[t]~dnorm(0,precJ) # Juvenile variability in survival
+  logit(sf[t])<-sf0+epsF[t] #First year survival
+  logit(sj[t])<-sj0+epsJ[t] #Annual juv. survival
+  u[t]<-sf[t-4]*sj[t-3]*sj[t-2]*sj[t-1] # Pre-adult survival
+  logit(rec[t])<-rho0-rho1*P[t-1] # Density dependent recruitment
+  R[t]~dbinom(rec[t]*u[t],N[t-4]) # New recruits
+  
+  # Adult survival
+  epsA[t]~dnorm(0,precA)
+  logit(sa[t])<-sa0+epsA[t]
+  Psurv[t]~dbinom(sa[t],P[t-1]) # Survivors
+  saDat[t]~dnorm(sa[t], 1/seSa^2) # Survival estimation
+  
+  # Population size (Process)
+  P[t]<-Psurv[t]+R[t]
+  
+  # Population size (Data)
+  Pdat[t]~dnorm(P[t],1/(P[t]*cvP[t]+0.000001)^2)
+}
+
+# Playback survey
+PdatPlayback~dnorm(P[51],1/(P[51]*cvPlayback+0.000001)^2)
+
+### Priors ###
+muRain~dgamma(0.1,0.1)
+precRain~dgamma(0.1,0.1)
+varBD~dbeta(0.5,10)
+varB<-10*varBD
+precB<-1/varB
+varAD~dbeta(0.5,10)
+varA<-10*varAD
+precA<-1/varA
+varFD~dbeta(0.5,10)
+varF<-10*varFD
+precF<-1/varF
+varJD~dbeta(0.5,10)
+varJ<-10*varJD
+precJ<-1/varJ
+
+mub~dbeta(13.45,5.85) # Baseline fecundity
+b0<-log(mub/(1-mub)) 
+b1~dnorm(0,0.01) # Effect of rainfall
+#b1~dgamma(0.1,0.1)
+#b2~dnorm(0,0.01) # Effect of rainfall
+b2<-0
+
+Cdummy~dbeta(5,5) # Scaling for Canna breeding success
+C<-0.5+Cdummy
+
+rho0<-10
+rho1~dgamma(1,1000) # Density dependence
+
+
+muu~dbeta(111,236) # Compound pre-breeder survival
+musf<-muu/musj^3
+sf0<-log(musf/(1-musf))  # Baseline fledgling survival
+
+
+musj~dbeta(172.55,30.45) # Baseline juv survival
+sj0<-log(musj/(1-musj)) 
+
+musa~dbeta(42.14, 5.21) # Baseline adult survival
+sa0<-log(musa/(1-musa))
+
+seSa<-0.03 # STandard error for adult survival estimation
+
+sdRat~dgamma(1,1) #Standard deviation for rat abundance index
+
+# Initial populations
+for(t in 1:4)
+{
+  Pdummy[t]~dunif(1000,150000)
+  P[t]<-round(Pdummy[t])
+  Rdummy[t]~dunif(2000,5000)
+  R[t]<-round(Rdummy[t])
+  Ndummy[t]~dunif(100,10000)
+  N[t]<-round(Ndummy[t])
+  sf[t]~dbeta(1,1)
+  sj[t]~dbeta(1,1)
+}
+
+
+#data# tmax,brEfNA, Ndat, brEfNACanna, NdatCanna, saDat, Pdat, cvP, PdatPlayback,cvPlayback, rain, rainRum
+# ratD
+#monitor# N,R,P,b,rec,sa 
+#monitor# b0,b1,b2,rho1,sf0,sj0,sa0,varA,varB,varF,varJ, C, muRain, precRain
+}"
+
+
+```
+
+
+
+```{r JAGSRun3PlusCovs,  cache=TRUE, include=FALSE, message=FALSE, echo=FALSE}
+##########################################################
+############    2. Real data specification    ############
+##########################################################
+tmax<-72 # Duration of population life, to the present
+ymin<-1950 # First calendar year for model
+
+Pdat<-rep(NA, tmax)
+cvP<-rep(0.35, tmax)
+Pdat[1976-ymin]<-116100
+cvP[1976-ymin]<-0.0827
+Pdat[1979-ymin]<-135000
+cvP[1979-ymin]<-0.0407
+Pdat[1982-ymin]<-79000
+cvP[1982-ymin]<-0.0601
+Pdat[1990-ymin]<-62800
+cvP[1990-ymin]<-0.338
+Pdat[1995-ymin]<-61500
+cvP[1995-ymin]<-0.3402
+Pdat[2001-ymin]<-124000
+cvP[2001-ymin]<-0.2601
+Pdat[2021-ymin]<-(226010+134514)/2 # Midpoint of best and worst-case scenario
+cvP[2021-ymin]<- (403915-85122)/(4*Pdat[2021-ymin]) # Conservative CV based on full range of estimates
+
+brEf<-c(0,0,0,0,0,0,0,30,30,30,30,30,30,30,30,30,30,30,0,0,30,0,30,0,0,0,0,0,0,0,0,0,0,0,48,36,0,0,0,0,0,0,0,100,84,125,91,81,77,85,76,99,93,106,110,166,171,144,154,165,153,155,173,221,28,144,48,72,0,0,0,0) # Breeding effort
+Ndat<-c(0,0,0,0,0,0,0,13, 13, 21, 15, 15, 17, 15, 19, 12, 21, 22, 0, 0, 23, 0, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21, 23, 0, 0, 0, 0, 0, 0, 0, 77, 70, 90, 80, 28, 43, 56, 55, 72, 70, 66, 63, 98, 87, 108, 106, 129, 109, 136, 88, 113, 20, 101, 31, 46, 0, 0, 0, 0)
+
+brEfCanna<-c(0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 45, 45, 45, 45, 45, 45, 45, 45, 45, 0, 45, 45, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+NdatCanna<-c(0,0,0,0,0,0,0,0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 23, 26, 34, 23, 37, 33, 27, 34, 11, 0, 31, 26, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+rain<-c(105.8,61.3,123.7,95.4,192.3,136.1,130.3,130.3,152.3,85.6,125.2,97.9,124.3,141.1,167.8,156.6,146.9,139.5,101.5,112.4,105,97.4,184.5,147.7,117.8,58.7,187.2,55.1,62.7,113,105.9,137.2,131,106.9,66.4,72.8,207.4,115.1,98.5,87.4,136.1,119.7,80.9,143.9,153,93.1,131,75.4,109.3,138.1,105.6,84.4,227.6,154.6,102.8,171.8,167.8,133.4,143.2,140.8,82.2,242.6,138.8,151,157.4,192.2,115,135.2,105.6,150.6,118.4,110,192)
+
+
+rainRum<-c(NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,5.486885246,4.706557377,6.380327869,5.754098361,4.604918033,5.495081967,5.045901639,2.97704918,3.795081967,4.331147541,3.68852459,6.554098361,6.440983607,4.018032787,3.136065574,NA,NA,NA,NA,NA,NA,NA,NA,2.009836066,NA,6.906557377,NA,1.809836066,3.385245902,NA,3.53442623,3.51147541,2.914754098,NA,NA,NA,NA,NA,5.118518519,5.225,NA,8.196774194,NA,12.13333333,NA,10.56470588,7.909375,1.365,5.795454545,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA)
+
+
+saDat<-rep(NA,tmax)
+saDat[(1994:2010)-ymin]<-c(0.9842, 0.9753, 0.9835, 0.9573, 0.982, 0.9803, 0.981, 0.973, 0.9734, 0.9734, 0.9811, 0.9612, 0.9645, 0.9684, 0.9794, 0.9763, 0.9863)
+
+##########################################################
+############           3. Modelling           ############
+##########################################################
+
+######################################################## Model specification ###
+# Final data preparations
+PdatPlayback<-97945
+cvPlayback<-0.175
+
+brEfNA<-brEf
+brEfNA[brEf==0]<-30
+Ndat[brEf==0]<-NA
+
+brEfNACanna<-brEfCanna
+brEfNACanna[brEfCanna==0]<-30
+NdatCanna[brEfCanna==0]<-NA
+
+saDat[is.na(saDat)]<-NA
+Pdat[is.na(Pdat)]<-NA
+
+results3c <- run.jags(popMod, n.chains=4, adapt=MCMCadapt, burnin=MCMCburnin, sample=MCMCsample, thin=MCMCthin, method="parallel")
+
+```
+
+
+
+
+```{r summaries3Covs, message=FALSE, warning=FALSE, cache=TRUE, include=FALSE}
+
+summaries3c<-summary(results3c)
+if(MCMCdetails==TRUE)
+{
+plot(results3c,plot.type=c("trace","histogram"),     vars=c("b0","b1","b2","rho1","sf0","sj0","sa0","varA","varB","varF","varJ","C","muRain", "precRain"))
+  }
+```
+
+
+
+
+```{r PriorPosteriors3-1-Covs, echo=FALSE, fig.cap="Prior-posterior plots from Model 3 after the inclusion of a rainfall effect on fecundity.", fig.height=8, fig.width=6, cache=FALSE}
+
+######################################################## Prior-posterior plots ###
+chains3c<-mcmc(results3c)
+coda3c<-as.data.frame(chains3c$mcmc[[1]])
+
+pripostPlot1(coda3c)
+
+
+```
+
+
+
+```{r PriorPosteriors3-2-Covs, echo=FALSE, cache=FALSE, fig.cap="(Ctd.) Prior-posterior plots from Model 3 after the inclusion of a rainfall effect on fecundity.", fig.height=5.3, fig.width=6}
+
+pripostPlot2(coda3c)
+
+
+```
+
+
+```{r Reconstructions3-Covs, echo=FALSE, cache=TRUE, fig.cap="Trajectory reconstructions from Model 3 with the inclusion of a rainfall effect on fecundity.", fig.height=8, fig.width=6}
+
+trajectories(summaries3c)
+
+```
+
+```{r Reconstructions3-Rain, echo=FALSE, cache=TRUE, fig.cap="a) Posterior distribution of effect of rain on fecundity (salmon histogram) compared to the prior (black line). b) Reconstruction of fecundity under the effect of rain, superimposed with the rain observations used by the model (standardised values of Tiree rainfall shown here in grey dashed lines, and Rum rainfall shown in black dashed lines - where available).", fig.height=8, fig.width=6}
+
+par(mfrow=c(2,1))
+# Effect of rain on fecundity
+#Prior
+da<-0.01
+loa<--1
+hia<-1
+a<-seq(loa,hia,da)
+am<-seq(loa+da/2,hia-da/2,da)
+#fd<-dgamma(am,1,1)
+fd<-dnorm(am,0,10)
+fd<-fd/sum(fd)
+plot(am,fd,lwd=2,lty=1, xlim=c(loa,hia), ylim=c(0,0.04), ylab="Prob density", 
+     xlab="Coefficient", type="l", main="a. Rain parameter")
+# Posterior
+b1D<-coda$b1
+f<-as.numeric(table(cut(b1D,a)))
+lines(am,f/sum(f), type="h",col="salmon", lwd=2)
+
+# Fecundity
+rang<-3*tmax+(1:(tmax-4))
+T<-ymin+(1:length(rang))
+plot(T,2*summaries3c[rang,2], type="l", ylim=c(0,1), xlab="Time (years)", ylab="b", main="b. Fecundity and rain")
+polygon(c(T,rev(T)),c(2*summaries3c[rang,1],rev(2*summaries3c[rang,3])), border=NA, col="salmon")
+lines(T,2*summaries3c[rang,2])
+m1<-mean(2*summaries3c[rang,2])
+sd1<-sqrt(var(2*summaries3c[rang,2]))
+lines(T,sd1*(rainRum[1:(tmax-4)]-mean(na.omit(rainRum)))/sqrt(var(na.omit(rainRum)))+m1,col="black",lwd=2,lty=2)
+lines(T,sd1*(rain[1:(tmax-4)]-mean(na.omit(rain)))/sqrt(var(na.omit(rain)))+m1,col="darkgrey",lwd=2,lty=2)
+
+par(mfrow=c(1,1))
+```
+
+
+# Forecasts
+
+## Modelling approach for generating forecasts
+As concluded in Section \@ref(SensitivityKey), we used the outputs of Model 3 for these forecasts. This does not explicitly use covariates, since we have no covariate data predictions for the future. The adopted approach for generating forecasts in this project is a form of parametric bootstrap, using complete model parameterisations. MCMC trials are considered a representative sample from the joint posterior of the fitted model. A total of `R mcmcTrials` posterior parameterisations are drawn from a fitted model object. Parameter values and initial conditions were treated identically in this process. Initial conditions were taken from the final four years of the fitted model (since, at least four years are required by the life history of shearwaters to initialise a population model). A population simulation was iterated as many times as the number of parameterisations (5000 iterations were used below to create stable credible intervals for the predictions), recording the population projections for the three component classes (Adults, Recruits and Fledglings). These outputs are stored in the `future` data frame. We recorded results for a time horizon of 100 years and derived metrics of risk for two key instants (respectively 25 and 100 years into the future).
+
+For each scenario, the key quantitative metric calculated from these 5000 projections was $q_\theta(\tau)$, defined as the probability that the population will be below a certain threshold size $\theta$ a number of years $\tau$ into the future. This can be used to examine particular extinction thresholds, for example $q_{10}(25)$ is the probability that there are less than 10 AOS exactly 25 years from now. However, we focused on the probability that the population has declined in the future and we therefore examined the two metrics
+
+$$ q_{P_{2023}}(25), \ \ \text{and} \ \ q_{P_{2023}}(100)$$
+
+These two probabilities are clearly indicated on the graphical projections generated for each scenario of interest. 
+
+The JAGS code for each of the models fitted above runs for several hours, so to make the use of the forecasting tool more computationally expedient, we translated the JAGS code  into self-contained R code, thus decoupling the (computationally expensive) model fitting stage from the (computationally quick) model prediction task. Therefore, the MCMC output from model fitting (i.e., the MCMC parameter draws from the posterior stored in the JAGS coda) can simply be provided to this piece of R code (see Appendix III), for near-instantaneous projections.
+
+
+```{r ForecastSimulationFunctions, cache=TRUE, include=FALSE}
+
+###### Parameterisation ######
+mcmcTrials<-5000 # Number of draws
+# Placement of draws
+ids<-unique(round(seq(1,length(coda3$b0),length(coda3$b0)/mcmcTrials))) 
+# Correction, in case, requisite trials were more than available
+mcmcTrials<-length(ids) 
+
+sdB<-sqrt((coda3$varB)[ids])
+sdF<-sqrt((coda3$varF)[ids])
+sdJ<-sqrt((coda3$varJ)[ids])
+sdA<-sqrt((coda3$varA)[ids])
+b0<-(coda3$b0)[ids]
+sf0<-(coda3$sf0)[ids]
+sj0<-(coda3$sj0)[ids]
+rho0<-(coda3$rho0)[ids]
+rho1<-(coda3$rho1)[ids]
+sa0<-(coda3$sa0)[ids]
+
+###### Forecast specifics ######
+foreT<-100 # Number of years into the future
+horiz1<-25 # First time horizon
+horiz2<-100 # Second time horizon
+ExtThresh<-median(coda3$`P[72]`)
+
+
+
+
+manxForecast<-function(sdB, sdF, sdJ, sdA, b0, sf0, sj0, 
+                       rho0, rho1, sa0, foreT,mA,mJ,mb)
+{
+  ###### Data structures ######
+  
+  
+  N<-P<-R<-matrix(NA,mcmcTrials,foreT+4)
+  sf<-sj<-matrix(NA,mcmcTrials,foreT+4)
+  
+  ###### Initialisation ######
+  for(t in 1:4)
+  {
+    N[,t]<-eval(parse(text=(paste("coda3$`N[",tmax-4+t,"]`", sep=""))))[ids]
+    P[,t]<-eval(parse(text=(paste("coda3$`P[",tmax-4+t,"]`", sep=""))))[ids]
+    R[,t]<-eval(parse(text=(paste("coda3$`R[",tmax-4+t,"]`", sep=""))))[ids]
+    sf[,t]<-eval(parse(text=(paste("coda3$`sf[",tmax-4+t,"]`", sep=""))))[ids]
+    sj[,t]<-eval(parse(text=(paste("coda3$`sj[",tmax-4+t,"]`", sep=""))))[ids]
+  }
+  
+  ###### Main Model ######
+  for(i in 1:mcmcTrials)
+  {
+    for(t in 5:(foreT+4))
+    {
+      # Fecundity (process)
+      epsB<-rnorm(1,0,sdB)
+      bAll<-(1-mb[t])*exp(b0[i]+epsB)/(1+exp(b0[i]+epsB)) # All fecundity
+      b<-0.5*bAll# Halving, to get female chicks
+      N[i,t]<-rbinom(1,P[i,t-1],b) #Female fledglings
+      
+      # Recruitment
+      epsF<-rnorm(1,0,sdF) # Fledgling variability in survival
+      epsJ<-rnorm(1,0,sdJ) # Juvenile variability in survival
+      #First year survival
+      sf[i,t]<-(1-mJ[t])*exp(sf0[i]+epsF)/(1+exp(sf0[i]+epsF)) 
+      #Annual juv. survival
+      sj[i,t]<-(1-mJ[t])*exp(sj0[i]+epsJ)/(1+exp(sj0[i]+epsJ)) 
+      # Pre-adult survival
+      u<-sf[i,t-4]*sj[i,t-3]*sj[i,t-2]*sj[i,t-1] 
+      # Density dependent recruitment
+      rec<-exp(rho0[i]-rho1[i]*P[i,t-1])/(1+exp(rho0[i]-rho1[i]*P[i,t-1])) 
+      R[i,t]<-rbinom(1,N[i,t-4],rec*u) # New recruits
+      
+      # Adult survival
+      epsA<-rnorm(1,0,sdA)
+      sa<-(1-mA[t])*exp(sa0[i]+epsA)/(1+exp(sa0[i]+epsA))
+      Psurv<-rbinom(1,P[i,t-1],sa) # Survivors
+      
+      # Population size (Process)
+      P[i,t]<-Psurv+R[i,t]
+      
+    }
+    
+  }
+
+  return(P)
+}
+
+
+forecastPlot<-function(P, yearmin, foreT, horiz1, horiz2, ExtThresh, main="")
+{
+  lo95<-hi95<-lo50<-hi50<-med<-rep(NA,foreT+4)
+  for( t in 1:(foreT+4))
+  {
+    med[t]<-median(P[,t])
+    lo95[t]<-quantile(P[,t],0.025)
+    hi95[t]<-quantile(P[,t],0.975)
+    lo50[t]<-quantile(P[,t],0.25)
+    hi50[t]<-quantile(P[,t],0.75)
+  }
+  
+  T<-yearmin+(tmax-4)+(1:(foreT+4))
+  ymax<-max(hi95)
+  plot(T,med, type="l", ylim=c(0,ymax), 
+       xlab="Time (years)", ylab="Adult population size", main=main)
+  polygon(c(T,rev(T)),c(lo95,rev(hi95)), border=NA, col="pink")
+  polygon(c(T,rev(T)),c(lo50,rev(hi50)), border=NA, col="salmon")
+  lines(T,med)
+  abline(v=yearmin+(tmax-4)+horiz1, lwd=1, lty=2, col="grey")
+  abline(v=yearmin+(tmax-4)+horiz2, lwd=1, lty=2, col="grey")
+  text(yearmin+(tmax-14)+horiz1, 3*ymax/4,
+       paste("q(",horiz1,")=",
+             round(sum(P[,horiz1]<ExtThresh)/mcmcTrials,2), sep=""))
+  text(yearmin+(tmax-14)+horiz2, 3*ymax/4,
+       paste("q(",horiz2,")=",
+             round(sum(P[,horiz2]<ExtThresh)/mcmcTrials,2), sep=""))
+  abline(h=ExtThresh, lwd=1, lty=2, col="grey")
+}
+```
+
+
+
+
+## Mechanisms of change
+Discussions within the steering group reviewed various mechanisms for demographic effects. 
+
+### Effects on adult survival
+
+ - Adults killed by collision with turbines blades or as a consequence of displacement by offshore wind farms. This would lead to ongoing but probably relatively low impact on annual mortality over multiple years (25-50). For OWF assessments, NatureScot advise requirement for PVA in instances where predicted level of mortality increases the baseline mortality rate by at least a 0.02 percentage point.
+ - HPAI or other potentially highly infectious and severe disease. Potential for very high added levels of mortality over a few years.
+ 
+### Effects on breeding success
+
+- Rum breeding success is generally somewhat higher than reported for the Welsh colonies. A useful starting point would be to examine impact on the Rum population trajectory if average breeding success were to match that recorded at Skomer/Skokholm.
+- Change in levels of rat predation. Potentially a few years when breeding success somewhat depressed if a series of mild winters enables more rats to survive in the colony overwinter. There has been some evidence of this in the past when breeding success fell to 0.4 with two seasons of below average breeding success coincident with evidence of increased rat activity before a severe winter apparently knocked the rat population back. If there were a progressive warming of winters, potential for such an effect to last longer and become progressively more severe over time. 
+- Changes in rainfall regime during incubation period. If there was a sustained shift in average rainfall amounts/pattern at this time of year, this would affect average breeding success. Detailed scenarios might be developed using relationships between rainfall and breeding success and climate change predictions.  
+
+### Effects on juvenile survival
+- Reduction in average fledgling weights. Associated with late laying in cold springs, but could potentially also arise from other circumstances leading to reduced food availability to provision chicks. Effect would most likely operate within first year post-fledging but the available evidence may not be sufficient to allow this effect to be separated out.  There are some data (@Thompson1987) (p.47-48) on relationship between fledging weight and date on Rum and data from Wales on relationships between fledging weight and subsequent recruitment that could be used to develop scenarios around different durations/frequencies of reduced average fledgling weights. There are also some data on fledgling weights and dates from Rum 2006 – 2014.
+
+## Specific quantitative scenarios
+Within the forecasting framework provided by our fitted models we set out to explore a number of scenarios, mainly with the aim of showcasing the capabilities of this framework. The R code provided in Appendix III is entirely portable and usable by researchers and managers with a working knowledge of R [@RCoreTeam2021]. 
+
+### A taxonomy of impacts
+To facilitate current and future investigation, any impact can be characterised by three key characteristics:
+
+1) **Intensity**: Impacts can be described as proportional losses in the ability to survive or reproduce
+
+2) **Temporal pattern**: The basic distinction examined here is between press and pulse perturbations [@Bender1984]. However, extensions to the examination of temporal patterns could look at patterns of stochasticity, periodicity. 
+
+3) **Demographic effect**: Different mechanisms can affect different demographic rates as described in the previous section. 
+
+Although these are the canonical characteristics of impact, that can be used to specify impact scenarios, we can envisage more complicated situations arising from combined effects. For instance, the same or different proximate mechanism might affect multiple demographic processes, in different ways. Alternatively, there may be an interplay between intensity and temporal pattern that can characterise fat-tailed distributions of impact (many small events accompanied by a few rare but catastrophic events). It is important to note that the framework provided here allows the user to specify any one of those scenarios and run stochastic predictions over arbitrary time horizons. Here, we have examined several scenarios of intensity (ranging from small attritions to complete failures of demographic performance) on two rates (adult mortality and fecundity) and two temporal patterns (one-off pulse versus constant press perturbations). The investigations have allowed us to explore whether small-but-persistent attritions are more important than one-off catastrophic events. Pulse perturbations are placed at the beginning of the forecasts (i.e., notionally, the year 2024).
+
+### Effects on adult survival
+The baseline scenario (Fig. \@ref(fig:AdultSurvivalScenarios)a) was the forecast generated from the population continuing with the current regime of environmental stochasticity in all the demographic processes. Importantly, despite having generated these predictions from Model 3 (i.e., not adhering to the overoptimistic 2022 estimate by @Inger2022), the model predicts only a 10% chance of population reduction in the next 25 years and 8% for the next century. From that baseline we examined two scenarios of press perturbation. A 1% reduction in annual adult survival yields a small increase in decline risk (Fig. \@ref(fig:AdultSurvivalScenarios)b) but decline becomes the predominant outcome if adult survival is suppressed by 5% annually (Fig. \@ref(fig:AdultSurvivalScenarios)c). These scenarios were followed by three pulse perturbation scenarios (10%, 25% and 50% reductions in adult survival). The population is predicted to be completely robust to such events (Figs \@ref(fig:AdultSurvivalScenarios)d, e & f).
+
+
+```{r AdultSurvivalScenarios, echo=FALSE, fig.cap="Effects on adult survival. The baseline scenario (a), two press perturbation scenarios (b & c) and three pulse perturbation scenarios (d, e & f). The pink band indicates 95% credible intervals. The salmon band indicates 50% credible intervals.", fig.height=8, fig.width=6, cache=TRUE}
+
+###### Scenario specifics ######
+
+par(mfrow=c(3,2))
+
+
+#### Scenario a: 
+# Extra proportion of adult mortality
+mA<-rep(0, foreT+4) 
+mA[5]<-mA[5]*1
+# Extra proportion of subadult mortality (i.e. juvs and fledglings)
+mJ<-rep(0, foreT+4) 
+mJ[5]<-mJ[5]*1
+# Extra reduction in fecundity
+mb<-rep(0, foreT+4) 
+mb[5]<-mb[5]*1
+
+proj<-manxForecast(sdB, sdF, sdJ, sdA, b0, sf0, sj0, rho0, rho1, sa0, foreT,mA,mJ,mb)
+forecastPlot(proj, ymin,foreT, horiz1, horiz2, ExtThresh,main="a.Status quo")
+
+#### Scenario b: 
+# Extra proportion of adult mortality
+mA<-rep(0.01, foreT+4) 
+mA[5]<-mA[5]*1
+# Extra proportion of subadult mortality (i.e. juvs and fledglings)
+mJ<-rep(0, foreT+4) 
+mJ[5]<-mJ[5]*1
+# Extra reduction in fecundity
+mb<-rep(0, foreT+4) 
+mb[5]<-mb[5]*1
+
+proj<-manxForecast(sdB, sdF, sdJ, sdA, b0, sf0, sj0, rho0, rho1, sa0, foreT,mA,mJ,mb)
+forecastPlot(proj, ymin,foreT, horiz1, horiz2, ExtThresh,main="b.1%pa extra adult mortality")
+
+#### Scenario c: 
+# Extra proportion of adult mortality
+mA<-rep(0.05, foreT+4) 
+mA[5]<-mA[5]*1
+# Extra proportion of subadult mortality (i.e. juvs and fledglings)
+mJ<-rep(0, foreT+4) 
+mJ[5]<-mJ[5]*1
+# Extra reduction in fecundity
+mb<-rep(0, foreT+4) 
+mb[5]<-mb[5]*1
+
+proj<-manxForecast(sdB, sdF, sdJ, sdA, b0, sf0, sj0, rho0, rho1, sa0, foreT,mA,mJ,mb)
+forecastPlot(proj, ymin,foreT, horiz1, horiz2, ExtThresh,main="c. 5%pa extra adult mortality")
+
+#### Scenario d: 
+# Extra proportion of adult mortality
+mA<-rep(0, foreT+4) 
+mA[5]<-0.1
+# Extra proportion of subadult mortality (i.e. juvs and fledglings)
+mJ<-rep(0, foreT+4) 
+mJ[5]<-mJ[5]*1
+# Extra reduction in fecundity
+mb<-rep(0, foreT+4) 
+mb[5]<-mb[5]*1
+
+proj<-manxForecast(sdB, sdF, sdJ, sdA, b0, sf0, sj0, rho0, rho1, sa0, foreT,mA,mJ,mb)
+forecastPlot(proj, ymin,foreT, horiz1, horiz2, ExtThresh,main="d.10% one-off adult mortality")
+
+
+
+#### Scenario e: 
+# Extra proportion of adult mortality
+mA<-rep(0, foreT+4) 
+mA[5]<-0.25
+# Extra proportion of subadult mortality (i.e. juvs and fledglings)
+mJ<-rep(0, foreT+4) 
+mJ[5]<-mJ[5]*1
+# Extra reduction in fecundity
+mb<-rep(0, foreT+4) 
+mb[5]<-mb[5]*1
+
+proj<-manxForecast(sdB, sdF, sdJ, sdA, b0, sf0, sj0, rho0, rho1, sa0, foreT,mA,mJ,mb)
+forecastPlot(proj, ymin,foreT, horiz1, horiz2, ExtThresh,main="e.25% one-off adult mortality")
+
+#### Scenario f: 
+# Extra proportion of adult mortality
+mA<-rep(0, foreT+4) 
+mA[5]<-0.5
+# Extra proportion of subadult mortality (i.e. juvs and fledglings)
+mJ<-rep(0, foreT+4) 
+mJ[5]<-mJ[5]*1
+# Extra reduction in fecundity
+mb<-rep(0, foreT+4) 
+mb[5]<-mb[5]*1
+
+proj<-manxForecast(sdB, sdF, sdJ, sdA, b0, sf0, sj0, rho0, rho1, sa0, foreT,mA,mJ,mb)
+forecastPlot(proj, ymin,foreT, horiz1, horiz2, ExtThresh,main="f.50% one-off adult mortality")
+
+par(mfrow=c(1,1))
+
+```
+
+
+### Effects on fecundity
+The baseline scenario (Fig. \@ref(fig:FecundityScenarios)a) is, once again, the forecast generated from the population continuing with the current regime of environmental stochasticity in all the demographic processes. Incrementally more severe attritions on fecundity, from 10% to 50% pa (Figs \@ref(fig:FecundityScenarios)c,d, & e) indicate that the population can be negatively impacted by sustained and (comparatively to survival) more drastic reductions in fecundity. Therefore, the population is much more robust to loss in fecundity. Equivalently, the population could survive with no lasting impact in the next 25 or 100 years, if it lost half or all of its fledgling cohort in 2024 (Fig. \@ref(fig:FecundityScenarios)e & f).
+
+
+```{r FecundityScenarios, echo=FALSE, cache=TRUE, fig.cap="Effects on fecundity. The baseline scenario (a), three press perturbation scenarios (b, c & d) and two pulse perturbation scenarios (e & f). The pink band indicates 95% credible intervals. The salmon band indicates 50% credible intervals.", fig.height=8, fig.width=6}
+
+###### Scenario specifics ######
+
+par(mfrow=c(3,2))
+
+
+#### Scenario a: 
+# Extra proportion of adult mortality
+mA<-rep(0, foreT+4) 
+mA[5]<-mA[5]*1
+# Extra proportion of subadult mortality (i.e. juvs and fledglings)
+mJ<-rep(0, foreT+4) 
+mJ[5]<-mJ[5]*1
+# Extra reduction in fecundity
+mb<-rep(0, foreT+4) 
+mb[5]<-mb[5]*1
+
+proj<-manxForecast(sdB, sdF, sdJ, sdA, b0, sf0, sj0, rho0, rho1, sa0, foreT,mA,mJ,mb)
+forecastPlot(proj, ymin,foreT, horiz1, horiz2, ExtThresh,main="a.Status quo")
+
+#### Scenario b: 
+# Extra proportion of adult mortality
+mA<-rep(0, foreT+4) 
+mA[5]<-mA[5]*1
+# Extra proportion of subadult mortality (i.e. juvs and fledglings)
+mJ<-rep(0, foreT+4) 
+mJ[5]<-mJ[5]*1
+# Extra reduction in fecundity
+mb<-rep(0.10, foreT+4) 
+mb[5]<-mb[5]*1
+
+proj<-manxForecast(sdB, sdF, sdJ, sdA, b0, sf0, sj0, rho0, rho1, sa0, foreT,mA,mJ,mb)
+forecastPlot(proj, ymin,foreT, horiz1, horiz2, ExtThresh,main="b.10%pa fecundity reduction")
+
+#### Scenario c: 
+# Extra proportion of adult mortality
+mA<-rep(0, foreT+4) 
+mA[5]<-mA[5]*1
+# Extra proportion of subadult mortality (i.e. juvs and fledglings)
+mJ<-rep(0, foreT+4) 
+mJ[5]<-mJ[5]*1
+# Extra reduction in fecundity
+mb<-rep(0.25, foreT+4) 
+mb[5]<-mb[5]*1
+
+proj<-manxForecast(sdB, sdF, sdJ, sdA, b0, sf0, sj0, rho0, rho1, sa0, foreT,mA,mJ,mb)
+forecastPlot(proj, ymin,foreT, horiz1, horiz2, ExtThresh,main="c. 25%pa fecundity reduction")
+
+#### Scenario d: 
+# Extra proportion of adult mortality
+mA<-rep(0, foreT+4) 
+mA[5]<-mA[5]*1
+# Extra proportion of subadult mortality (i.e. juvs and fledglings)
+mJ<-rep(0, foreT+4) 
+mJ[5]<-mJ[5]*1
+# Extra reduction in fecundity
+mb<-rep(0.5, foreT+4) 
+mb[5]<-mb[5]*1
+
+proj<-manxForecast(sdB, sdF, sdJ, sdA, b0, sf0, sj0, rho0, rho1, sa0, foreT,mA,mJ,mb)
+forecastPlot(proj, ymin,foreT, horiz1, horiz2, ExtThresh,main="d.50% pa fecundity reduction")
+
+
+
+#### Scenario e: 
+# Extra proportion of adult mortality
+mA<-rep(0, foreT+4) 
+mA[5]<-mA[5]*1
+# Extra proportion of subadult mortality (i.e. juvs and fledglings)
+mJ<-rep(0, foreT+4) 
+mJ[5]<-mJ[5]*1
+# Extra reduction in fecundity
+mb<-rep(0, foreT+4) 
+mb[5]<-0.5
+
+proj<-manxForecast(sdB, sdF, sdJ, sdA, b0, sf0, sj0, rho0, rho1, sa0, foreT,mA,mJ,mb)
+forecastPlot(proj, ymin,foreT, horiz1, horiz2, ExtThresh,main="e.50% one-off fecundity reduction")
+
+#### Scenario f: 
+# Extra proportion of adult mortality
+mA<-rep(0, foreT+4) 
+mA[5]<-mA[5]*1
+# Extra proportion of subadult mortality (i.e. juvs and fledglings)
+mJ<-rep(0, foreT+4) 
+mJ[5]<-mJ[5]*1
+# Extra reduction in fecundity
+mb<-rep(0, foreT+4) 
+mb[5]<-1
+
+proj<-manxForecast(sdB, sdF, sdJ, sdA, b0, sf0, sj0, rho0, rho1, sa0, foreT,mA,mJ,mb)
+forecastPlot(proj, ymin,foreT, horiz1, horiz2, ExtThresh,main="f.100% one-off fecundity reduction")
+
+par(mfrow=c(1,1))
+
+```
+
+
+
+# Conclusions
+
+* Available population and demographic data are sufficient to fit an informative population model for the nationally important Manx shearwater population on the isle of Rum. The model can reconstruct past trends and provide informative predictions and scenario counterfactuals over periods of decades.
+
+* It is less clear whether the available data can inform us about the current strength of density dependence and potential consequences for recruitment. A detailed model of successively relaxing density dependence is described in this report, but the available data do not allow it to be fitted.
+
+* It is equally not clear whether the model can detect trends in response to covariates. The original ambition was that once the state-space model had decomposed the observed dynamics into individual demographic trajectories, it would become easier for the model to detect correlations with covariates. In the case of the one covariate (rainfall) for which data and prior knowledge existed to do this, the results were not conclusive. While further analyses of available rainfall data is beyond the scope of this project, future further exploration of this covariate within the model framework would be of value. In particular, it would be important to examine extreme values in daily rainfall data. Other covariates (such as rat density) were not examinable due to data-sparsity. 
+
+* Importantly, the simulation experiments with this model, replicating the exact patters of availability of the real data of different types (i.e. their sample sizes and time instances), indicated that retrieval of information on density dependence and covariates may currently prove challenging. 
+
+* Investigation of the sensitivity on the precision and bias of population estimates indicates that precision is less influential than bias.
+
+* Low and intermediate population estimates for 2022 give similar results, indicating a robust family of models.
+
+* While the survey methods remain unstandardised, the precautionary modelling approach is to proceed with a model that permits both over- and under-estimation of the current population. This is based on the facts that the [@Inger2022] report did not validate the habitat modelling approach (potential upward bias) and did not propagate analysis uncertainty to final results (potential imprecision). 
+
+* Predictions from the fitted model anticipate a mostly stable population under the status-quo.
+
+* Press perturbations seem to be capable of turning the population to a declining trend. For example, a 5% annual reduction in adult survival leads to a median 69% chance of decline over the next 25 and 100 years, whereas a more drastic (50%) annual reduction in fecundity would be required for a similar outcome. 
+
+* Subsequently, from these indicative and highly selective investigations, we conclude that the population would be most vulnerable to long-term but modest reductions in the survival of breeders.
+
+* The fully-fitted, user-friendly and computationally efficient R-functions for generating these projections are available with the deliverables of this project (at https://github.com/JasonMat/ManxRum). Future work could design more systematic explorations of the scenario space (e.g., factorial designs with simultaneous press and pulse impacts on both fecundity and survival) for investigating impacts on this population. Alternatively, case-specific questions can be asked if the exact profile of impacts for a particular development is known. 
+
+
+# Appendix I: Code for JAGS model - Model fitting
+
+```{r JAGSLiisting, ref.label=c('JAGSModel')}
+
+
+```
+
+# Appendix II: Code for R model - Simulation
+
+
+```{r RPars, eval=FALSE,  ref.label=c('Parameters')}
+
+
+```
+
+```{r RListing, eval=FALSE,  ref.label=c('SimulationCode')}
+
+
+```
+
+# Appendix III: Autonomous code for forecasting and scenarios
+
+```{r forecastListing, ref.label=c('ForecastSimulationFunctions')}
+
+
+```
+
+# References
